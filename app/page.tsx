@@ -17,6 +17,8 @@ export default function Home() {
   const [maxYear, setMaxYear] = useState<string>('');
   const [yearRange, setYearRange] = useState<YearRange | null>(null);
   const [loading, setLoading] = useState(true);
+  const [playlistUrl, setPlaylistUrl] = useState<string>('');
+  const [useDefaultList, setUseDefaultList] = useState(true);
 
   useEffect(() => {
     const fetchYearRange = async () => {
@@ -82,9 +84,15 @@ export default function Home() {
   };
 
   const isFormValid = () => {
-    return isValidYear(minYear) && 
-           isValidYear(maxYear) && 
-           parseInt(minYear) <= parseInt(maxYear);
+    const yearValidation = isValidYear(minYear) && 
+                          isValidYear(maxYear) && 
+                          parseInt(minYear) <= parseInt(maxYear);
+    
+    if (useDefaultList) {
+      return yearValidation;
+    } else {
+      return yearValidation && playlistUrl.trim() !== '';
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -94,7 +102,7 @@ export default function Home() {
     const queryParams = new URLSearchParams({
       minYear: minYear,
       maxYear: maxYear,
-      songList: DEFAULT_LIST_URL
+      songList: useDefaultList ? DEFAULT_LIST_URL : playlistUrl
     });
     router.push(`/quiz?${queryParams.toString()}`);
   };
@@ -174,15 +182,57 @@ export default function Home() {
               )}
             </div>
 
-            <div className="text-center text-sm text-gray-600">
-              Using <a 
-                href={DEFAULT_LIST_VIEW_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-purple-600 hover:text-purple-800 underline"
-              >
-                default song list
-              </a>
+            {/* Song List Selection */}
+            <div className="space-y-4">
+              <label className="block text-lg font-semibold text-gray-700">Song List</label>
+              
+              <div className="space-y-2">
+                <label className="flex items-center space-x-2">
+                  <input
+                    type="radio"
+                    checked={useDefaultList}
+                    onChange={() => setUseDefaultList(true)}
+                    className="text-purple-600 focus:ring-purple-500"
+                  />
+                  <span className="text-gray-700">Use default song list</span>
+                </label>
+                
+                <label className="flex items-center space-x-2">
+                  <input
+                    type="radio"
+                    checked={!useDefaultList}
+                    onChange={() => setUseDefaultList(false)}
+                    className="text-purple-600 focus:ring-purple-500"
+                  />
+                  <span className="text-gray-700">Use Spotify playlist</span>
+                </label>
+              </div>
+
+              {!useDefaultList && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-1">Spotify Playlist URL</label>
+                  <input
+                    type="text"
+                    placeholder="https://open.spotify.com/playlist/..."
+                    value={playlistUrl}
+                    onChange={(e) => setPlaylistUrl(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200"
+                  />
+                </div>
+              )}
+
+              {useDefaultList && (
+                <div className="text-center text-sm text-gray-600">
+                  Using <a 
+                    href={DEFAULT_LIST_VIEW_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-purple-600 hover:text-purple-800 underline"
+                  >
+                    default song list
+                  </a>
+                </div>
+              )}
             </div>
           </div>
 
