@@ -7,12 +7,7 @@ const nextConfig = {
   },
   images: {
     unoptimized: true,
-  },
-  output: 'export',
-  distDir: 'dist',
-  trailingSlash: true,
-  basePath: process.env.NODE_ENV === 'development' ? '' : '/musikquiz',
-  assetPrefix: process.env.NODE_ENV === 'development' ? '' : '/musikquiz/',
+  }
 };
 
 export default nextConfig; 
