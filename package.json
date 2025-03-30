@@ -2,12 +2,15 @@
   "name": "musikquiz",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "18.x"
+  },
   "scripts": {
     "dev": "next dev",
     "dev:base": "next dev --basePath /musikquiz",
     "build": "next build",
     "build:one": "next build && next export",
-    "start": "next start",
+    "start": "next start -p $PORT",
     "lint": "next lint"
   },
   "dependencies": {
