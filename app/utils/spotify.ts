@@ -20,15 +20,6 @@ interface SpotifySearchResponse {
   };
 }
 
-declare global {
-  interface Window {
-    ENV: {
-      SPOTIFY_CLIENT_ID: string;
-      SPOTIFY_CLIENT_SECRET: string;
-    };
-  }
-}
-
 let tokenData: SpotifyToken | null = null;
 let tokenExpiration: number = 0;
 
@@ -38,8 +29,8 @@ async function getAccessToken(): Promise<string> {
     return tokenData.access_token;
   }
 
-  const clientId = window.ENV?.SPOTIFY_CLIENT_ID;
-  const clientSecret = window.ENV?.SPOTIFY_CLIENT_SECRET;
+  const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID;
+  const clientSecret = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
     throw new Error('Spotify credentials not configured');
