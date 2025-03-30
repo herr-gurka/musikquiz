@@ -84,15 +84,18 @@ export default function Home() {
   };
 
   const isFormValid = () => {
-    const yearValidation = isValidYear(minYear) && 
-                          isValidYear(maxYear) && 
-                          parseInt(minYear) <= parseInt(maxYear);
+    if (!minYear || !maxYear) return false;
+    if (parseInt(minYear) > parseInt(maxYear)) return false;
+    if (parseInt(minYear) < 1900 || parseInt(maxYear) > new Date().getFullYear()) return false;
     
-    if (useDefaultList) {
-      return yearValidation;
-    } else {
-      return yearValidation && playlistUrl.trim() !== '';
+    if (!useDefaultList) {
+      // Validate Spotify playlist URL
+      if (!playlistUrl) return false;
+      const spotifyPlaylistRegex = /^https:\/\/open\.spotify\.com\/playlist\/[a-zA-Z0-9]+/;
+      return spotifyPlaylistRegex.test(playlistUrl);
     }
+    
+    return true;
   };
 
   const handleSubmit = (e: React.FormEvent) => {
