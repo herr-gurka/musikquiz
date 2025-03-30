@@ -52,39 +52,62 @@ function QuizContent() {
         const maxYear = searchParams.get('maxYear');
         const songList = searchParams.get('songList');
 
-        const response = await fetch(songList || '/default-songs.csv');
-        const csvText = await response.text();
-        
-        // Helper function to parse CSV line with quotes
-        const parseCSVLine = (line: string) => {
-          const result = [];
-          let current = '';
-          let inQuotes = false;
-          
-          for (let i = 0; i < line.length; i++) {
-            const char = line[i];
-            if (char === '"') {
-              inQuotes = !inQuotes;
-            } else if (char === ',' && !inQuotes) {
-              result.push(current);
-              current = '';
-            } else {
-              current += char;
-            }
+        if (!songList) {
+          throw new Error('No song list provided');
+        }
+
+        let parsedSongs: Song[] = [];
+
+        // Check if the songList is a Spotify playlist URL
+        if (songList.includes('spotify.com/playlist')) {
+          const response = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(songList)}`);
+          if (!response.ok) {
+            throw new Error('Failed to fetch Spotify playlist');
           }
-          result.push(current);
-          return result.map(field => field.replace(/^"|"$/g, '').trim());
-        };
-        
-        // Parse CSV
-        const parsedSongs = csvText
-          .split('\n')
-          .slice(1) // Skip header
-          .map(line => {
-            const [title, artist, releaseYear] = parseCSVLine(line);
-            const year = parseInt(releaseYear);
-            return { artist, title, releaseYear, year, spotifyUrl: undefined };
-          });
+          const data = await response.json();
+          parsedSongs = data.map((song: any) => ({
+            title: song.title,
+            artist: song.artist,
+            releaseYear: song.releaseYear,
+            year: parseInt(song.releaseYear),
+            spotifyUrl: undefined
+          }));
+        } else {
+          // Handle CSV file
+          const response = await fetch(songList);
+          const csvText = await response.text();
+          
+          // Helper function to parse CSV line with quotes
+          const parseCSVLine = (line: string) => {
+            const result = [];
+            let current = '';
+            let inQuotes = false;
+            
+            for (let i = 0; i < line.length; i++) {
+              const char = line[i];
+              if (char === '"') {
+                inQuotes = !inQuotes;
+              } else if (char === ',' && !inQuotes) {
+                result.push(current);
+                current = '';
+              } else {
+                current += char;
+              }
+            }
+            result.push(current);
+            return result.map(field => field.replace(/^"|"$/g, '').trim());
+          };
+          
+          // Parse CSV
+          parsedSongs = csvText
+            .split('\n')
+            .slice(1) // Skip header
+            .map(line => {
+              const [title, artist, releaseYear] = parseCSVLine(line);
+              const year = parseInt(releaseYear);
+              return { artist, title, releaseYear, year, spotifyUrl: undefined };
+            });
+        }
 
         // Get the year range
         const minYearInt = parseInt(minYear!);
