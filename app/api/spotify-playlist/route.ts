@@ -100,7 +100,7 @@ export async function GET(request: Request) {
 
     if (!response.ok) {
       console.log('Error: Spotify API returned status:', response.status);
-      return NextResponse.json({ error: 'Failed to fetch playlist. Please try again later.' }, { status: 500 });
+      return NextResponse.json({ error: 'Failed to fetch playlist.' }, { status: 500 });
     }
 
     const data: SpotifyPlaylistResponse = await response.json();
