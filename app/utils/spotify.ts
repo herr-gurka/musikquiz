@@ -29,21 +29,10 @@ async function getAccessToken(): Promise<string> {
     return tokenData.access_token;
   }
 
-  const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID;
-  const clientSecret = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_SECRET;
-
-  if (!clientId || !clientSecret) {
-    throw new Error('Spotify credentials not configured');
+  const response = await fetch('/api/spotify-token');
+  if (!response.ok) {
+    throw new Error('Failed to get Spotify token');
   }
-
-  const response = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-    },
-    body: 'grant_type=client_credentials',
-  });
 
   const data = await response.json();
   if (!data || typeof data.expires_in !== 'number' || typeof data.access_token !== 'string') {
