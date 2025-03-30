@@ -71,7 +71,7 @@ export async function GET(request: Request) {
     const playlistId = playlistUrl.match(/playlist\/([a-zA-Z0-9]+)/)?.[1];
     if (!playlistId) {
       console.log('Error: Invalid playlist URL format');
-      return NextResponse.json({ error: 'Invalid playlist URL' }, { status: 400 });
+      return NextResponse.json({ error: 'Invalid playlist URL format. Please use a valid Spotify playlist URL.' }, { status: 400 });
     }
 
     console.log('Extracted playlist ID:', playlistId);
@@ -88,13 +88,28 @@ export async function GET(request: Request) {
       }
     );
 
+    if (response.status === 404) {
+      console.log('Error: Playlist not found');
+      return NextResponse.json({ error: 'Playlist not found. Please check if the URL is correct and the playlist is public.' }, { status: 404 });
+    }
+
+    if (response.status === 403) {
+      console.log('Error: Playlist is private');
+      return NextResponse.json({ error: 'This playlist is private. Please make it public or use a different playlist.' }, { status: 403 });
+    }
+
     if (!response.ok) {
       console.log('Error: Spotify API returned status:', response.status);
-      throw new Error(`Spotify API error: ${response.status}`);
+      return NextResponse.json({ error: 'Failed to fetch playlist. Please try again later.' }, { status: 500 });
     }
 
     const data: SpotifyPlaylistResponse = await response.json();
     console.log(`Fetched ${data.items.length} tracks from playlist`);
+
+    if (!data.items || data.items.length === 0) {
+      console.log('Error: Playlist is empty');
+      return NextResponse.json({ error: 'This playlist is empty. Please add some songs and try again.' }, { status: 400 });
+    }
 
     // Transform the data into our song format
     const songs = data.items.map(item => ({
@@ -108,7 +123,7 @@ export async function GET(request: Request) {
   } catch (error) {
     console.error('Error fetching playlist:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch playlist' },
+      { error: 'Failed to fetch playlist. Please try again later.' },
       { status: 500 }
     );
   }

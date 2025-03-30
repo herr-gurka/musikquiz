@@ -39,6 +39,7 @@ function QuizContent() {
   const [isFlipped, setIsFlipped] = useState(false);
   const [hasBeenFlipped, setHasBeenFlipped] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const fetchStartedRef = useRef(false);
 
   useEffect(() => {
@@ -55,8 +56,9 @@ function QuizContent() {
         console.log('Quiz parameters:', { minYear, maxYear, songList });
 
         if (!songList) {
-          console.log('Error: No song list provided');
-          throw new Error('No song list provided');
+          setError('No song list provided');
+          setLoading(false);
+          return;
         }
 
         let parsedSongs: Song[] = [];
@@ -66,10 +68,13 @@ function QuizContent() {
           console.log('Fetching songs from Spotify playlist');
           const response = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(songList)}`);
           if (!response.ok) {
-            console.log('Error: Failed to fetch Spotify playlist');
-            throw new Error('Failed to fetch Spotify playlist');
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to fetch Spotify playlist');
           }
           const data = await response.json();
+          if (!data || data.length === 0) {
+            throw new Error('No songs found in the playlist');
+          }
           console.log(`Received ${data.length} songs from Spotify playlist`);
           parsedSongs = data.map((song: any) => ({
             title: song.title,
@@ -186,6 +191,7 @@ function QuizContent() {
 
       } catch (error) {
         console.error('Error loading songs:', error);
+        setError(error instanceof Error ? error.message : 'Failed to load songs');
         setLoading(false);
       }
     };
@@ -227,6 +233,32 @@ function QuizContent() {
             <div className="animate-spin rounded-full h-8 w-8 border-4 border-purple-500 border-t-transparent"></div>
             <div className="text-2xl font-semibold text-gray-700">Loading quiz...</div>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-600 via-blue-500 to-purple-600 p-4">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-2xl p-8 space-y-6">
+          <div className="text-center space-y-4">
+            <div className="w-16 h-16 mx-auto text-red-500">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-full h-full">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+              </svg>
+            </div>
+            <h2 className="text-2xl font-bold text-gray-900">Oops! Something went wrong</h2>
+            <p className="text-gray-600">{error}</p>
+            <p className="text-sm text-gray-500">Please check if the playlist URL is correct and try again.</p>
+          </div>
+          
+          <button
+            onClick={() => router.push('/')}
+            className="w-full py-3 px-6 text-white font-semibold bg-gradient-to-r from-purple-600 to-blue-500 rounded-lg shadow-lg hover:shadow-xl transform hover:scale-[1.02] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2"
+          >
+            Back to Start
+          </button>
         </div>
       </div>
     );
