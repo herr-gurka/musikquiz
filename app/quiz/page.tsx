@@ -52,7 +52,10 @@ function QuizContent() {
         const maxYear = searchParams.get('maxYear');
         const songList = searchParams.get('songList');
 
+        console.log('Quiz parameters:', { minYear, maxYear, songList });
+
         if (!songList) {
+          console.log('Error: No song list provided');
           throw new Error('No song list provided');
         }
 
@@ -60,11 +63,14 @@ function QuizContent() {
 
         // Check if the songList is a Spotify playlist URL
         if (songList.includes('spotify.com/playlist')) {
+          console.log('Fetching songs from Spotify playlist');
           const response = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(songList)}`);
           if (!response.ok) {
+            console.log('Error: Failed to fetch Spotify playlist');
             throw new Error('Failed to fetch Spotify playlist');
           }
           const data = await response.json();
+          console.log(`Received ${data.length} songs from Spotify playlist`);
           parsedSongs = data.map((song: any) => ({
             title: song.title,
             artist: song.artist,
@@ -73,7 +79,7 @@ function QuizContent() {
             spotifyUrl: undefined
           }));
         } else {
-          // Handle CSV file
+          console.log('Fetching songs from CSV file');
           const response = await fetch(songList);
           const csvText = await response.text();
           
@@ -107,11 +113,14 @@ function QuizContent() {
               const year = parseInt(releaseYear);
               return { artist, title, releaseYear, year, spotifyUrl: undefined };
             });
+          console.log(`Parsed ${parsedSongs.length} songs from CSV`);
         }
 
         // Get the year range
         const minYearInt = parseInt(minYear!);
         const maxYearInt = parseInt(maxYear!);
+        
+        console.log('Filtering songs by year range:', { minYearInt, maxYearInt });
         
         // Create a map to store one song per year
         const selectedSongsByYear = new Map();
@@ -129,6 +138,8 @@ function QuizContent() {
         const selectedSongs = Array.from(selectedSongsByYear.values())
           .sort(() => Math.random() - 0.5);
 
+        console.log(`Selected ${selectedSongs.length} songs for the quiz`);
+
         // Set initial songs state and stop loading
         setSongs(selectedSongs);
         setLoading(false);
@@ -138,22 +149,28 @@ function QuizContent() {
 
         // Fetch Spotify URLs in the background, one at a time
         const fetchSpotifyUrls = async () => {
+          console.log('Starting to fetch Spotify URLs for songs');
           for (const song of selectedSongs) {
             try {
               const songKey = `${song.artist}-${song.title}`;
               
               // Skip if we've already searched for this song
               if (searchedSongs.has(songKey)) {
+                console.log(`Skipping duplicate search for: ${songKey}`);
                 continue;
               }
               
               searchedSongs.set(songKey, true);
+              console.log(`Searching Spotify for: ${songKey}`);
               const trackId = await searchSpotifyTrack(song.artist, song.title);
               
               if (trackId) {
+                console.log(`Found Spotify track ID for: ${songKey}`);
                 setSongs(prevSongs => prevSongs.map(s => 
                   s === song ? { ...s, spotifyUrl: `https://open.spotify.com/track/${trackId}` } : s
                 ));
+              } else {
+                console.log(`No Spotify track found for: ${songKey}`);
               }
             } catch (error) {
               console.error(`Error fetching Spotify URL for song: ${song.title}`, error);
@@ -161,6 +178,7 @@ function QuizContent() {
             // Small delay between requests to avoid rate limits
             await new Promise(resolve => setTimeout(resolve, 333));
           }
+          console.log('Finished fetching Spotify URLs');
         };
 
         // Start fetching Spotify URLs without waiting

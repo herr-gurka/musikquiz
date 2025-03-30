@@ -60,17 +60,25 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const playlistUrl = searchParams.get('url');
 
+    console.log('Fetching playlist from URL:', playlistUrl);
+
     if (!playlistUrl) {
+      console.log('Error: No playlist URL provided');
       return NextResponse.json({ error: 'Playlist URL is required' }, { status: 400 });
     }
 
     // Extract playlist ID from URL
     const playlistId = playlistUrl.match(/playlist\/([a-zA-Z0-9]+)/)?.[1];
     if (!playlistId) {
+      console.log('Error: Invalid playlist URL format');
       return NextResponse.json({ error: 'Invalid playlist URL' }, { status: 400 });
     }
 
+    console.log('Extracted playlist ID:', playlistId);
+
     const token = await getAccessToken();
+    console.log('Got Spotify access token');
+
     const response = await fetch(
       `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`,
       {
@@ -81,10 +89,12 @@ export async function GET(request: Request) {
     );
 
     if (!response.ok) {
+      console.log('Error: Spotify API returned status:', response.status);
       throw new Error(`Spotify API error: ${response.status}`);
     }
 
     const data: SpotifyPlaylistResponse = await response.json();
+    console.log(`Fetched ${data.items.length} tracks from playlist`);
 
     // Transform the data into our song format
     const songs = data.items.map(item => ({
@@ -93,6 +103,7 @@ export async function GET(request: Request) {
       releaseYear: item.track.album.release_date.split('-')[0],
     }));
 
+    console.log('Transformed songs:', songs);
     return NextResponse.json(songs);
   } catch (error) {
     console.error('Error fetching playlist:', error);
