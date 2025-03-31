@@ -101,12 +101,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ songs: [], total: 0, hasMore: false });
     }
 
-    // Process tracks one at a time with proper rate limiting
+    // Process only the first 2 tracks initially to avoid timeout
+    const initialTracks = tracks.slice(0, 2);
     const transformedSongs = [];
     const totalTracks = playlistData.total;
-    const tracksToProcess = tracks.slice(0, limit);
 
-    for (const track of tracksToProcess) {
+    for (const track of initialTracks) {
       try {
         // Add a delay before each Discogs request to respect rate limits
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -156,10 +156,12 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Return initial songs quickly
     return NextResponse.json({
       songs: transformedSongs,
       total: totalTracks,
-      hasMore: startIndex + transformedSongs.length < totalTracks
+      hasMore: startIndex + tracks.length < totalTracks,
+      remainingTracks: tracks.slice(2) // Include remaining tracks for background processing
     });
   } catch (error) {
     console.error('Error in Spotify playlist route:', error);

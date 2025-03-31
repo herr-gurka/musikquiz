@@ -22,6 +22,19 @@ interface PlaylistResponse {
   songs: Song[];
   total: number;
   hasMore: boolean;
+  remainingTracks?: SpotifyTrack[];
+}
+
+interface SpotifyTrack {
+  name: string;
+  artists: { name: string }[];
+  album: {
+    name: string;
+    release_date: string;
+  };
+  external_urls: {
+    spotify: string;
+  };
 }
 
 export default function QuizPage() {
@@ -71,8 +84,28 @@ function QuizContent() {
           throw new Error(errorData.error || 'Failed to fetch Spotify playlist');
         }
         const data: PlaylistResponse = await response.json();
+        
+        // Add initial songs to the list
         setSongs(prevSongs => [...prevSongs, ...data.songs]);
         setTotalSongs(data.total);
+
+        // If there are remaining tracks, process them in the background
+        if (data.remainingTracks && data.remainingTracks.length > 0) {
+          // Process remaining tracks one by one
+          for (const track of data.remainingTracks) {
+            try {
+              const response = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(songList)}&startIndex=${startIndex + songs.length}&limit=1`);
+              if (response.ok) {
+                const newData = await response.json();
+                if (newData.songs.length > 0) {
+                  setSongs(prevSongs => [...prevSongs, ...newData.songs]);
+                }
+              }
+            } catch (error) {
+              console.error('Error processing remaining track:', error);
+            }
+          }
+        }
       } else {
         // For CSV files, load everything at once
         const response = await fetch(songList);
