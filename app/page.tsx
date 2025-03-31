@@ -44,6 +44,21 @@ export default function Home() {
 
   const currentYear = new Date().getFullYear();
 
+  const defaultPlaylists = [
+    {
+      name: 'One song',
+      url: 'https://open.spotify.com/playlist/61d65P9G7Vs04feYIvamzD'
+    },
+    {
+      name: 'Three songs',
+      url: 'https://open.spotify.com/playlist/69ZX2UbB8zKfrkFT8Hb5NE'
+    },
+    {
+      name: 'Five songs',
+      url: 'https://open.spotify.com/playlist/70WKDDjnek5evVwcc4ze80'
+    }
+  ];
+
   const isFormValid = () => {
     if (!startYear || !endYear) return false;
     if (parseInt(startYear) > parseInt(endYear)) return false;
