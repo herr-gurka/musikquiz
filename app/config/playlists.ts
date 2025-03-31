@@ -5,17 +5,23 @@ export interface Playlist {
   description?: string;
 }
 
-export const predefinedPlaylists: Playlist[] = [
+export const predefinedPlaylists = [
   {
-    id: 'hip-hop',
-    name: 'Hip Hop',
-    url: 'https://open.spotify.com/playlist/20KOFOgLR783Z3U9z9nLWe',
-    description: 'A collection of classic hip hop tracks'
+    id: 'one-song',
+    name: 'One song',
+    url: 'https://open.spotify.com/playlist/61d65P9G7Vs04feYIvamzD',
+    description: 'A playlist with just one song for quick testing'
   },
   {
-    id: 'mix',
-    name: 'Mix',
-    url: 'https://open.spotify.com/playlist/4zPrx4mWG5QB61zH8bbva7',
-    description: 'A diverse mix of classic songs'
+    id: 'three-songs',
+    name: 'Three songs',
+    url: 'https://open.spotify.com/playlist/69ZX2UbB8zKfrkFT8Hb5NE',
+    description: 'A playlist with three songs for testing'
+  },
+  {
+    id: 'five-songs',
+    name: 'Five songs',
+    url: 'https://open.spotify.com/playlist/70WKDDjnek5evVwcc4ze80',
+    description: 'A playlist with five songs for testing'
   }
 ]; 
