@@ -1,11 +1,23 @@
 # Musikquiz Setup and Deployment Guide
 
+> **IMPORTANT**: This documentation file should be kept local and never committed to git as it may contain sensitive information. It is for development reference only.
+
+## Project Overview
+Musikquiz is a web application that creates music quizzes from Spotify playlists. It:
+- Fetches songs from Spotify playlists
+- Retrieves original release dates from Discogs API
+- Presents songs one at a time with a card-based interface
+- Allows users to guess release dates
+- Shows progress and completed songs
+
 ## Local Development Setup
 
 ### Prerequisites
 - Node.js (version specified in package.json)
 - npm or yarn
 - Git
+- Spotify Developer Account
+- Discogs Developer Account
 
 ### Initial Setup
 1. Clone the repository:
@@ -43,6 +55,9 @@
 - The application uses `config.local.ts` for all API keys and configuration in development
 - This file is git-ignored and should never be committed
 - You can test with both Spotify and Discogs by adding both API keys to the local config
+- The application will automatically use:
+  - Local config file in development
+  - Environment variables in production
 
 ## Production Deployment
 
@@ -60,11 +75,35 @@ The following environment variables need to be set in Vercel:
 1. Push changes to the main branch
 2. Vercel automatically detects changes and starts a new deployment
 3. The application uses environment variables from Vercel in production
+4. The deployment URL will be: `https://musikquiz-three.vercel.app`
 
-### Deployment Notes
-- Production environment uses `config.prod.ts` which reads from environment variables
-- Never commit sensitive information to the repository
-- Always test changes locally before deploying to production
+### Deployment Settings
+- Framework Preset: Next.js
+- Build Command: `next build`
+- Output Directory: `.next`
+- Install Command: `npm install`
+
+### Common Deployment Issues
+
+1. **504 Gateway Timeout**
+   - This can occur when processing large playlists
+   - The application is configured to handle this by:
+     - Processing only 2 songs initially
+     - Loading remaining songs in the background
+     - Using proper rate limiting for API calls
+
+2. **Environment Variables**
+   - If you see errors related to missing environment variables:
+     - Double-check that all required variables are set in Vercel
+     - Ensure variables are added to all environments
+     - Redeploy after adding new variables
+
+3. **Build Failures**
+   - Check the build logs in Vercel dashboard
+   - Common fixes:
+     - Ensure all dependencies are in package.json
+     - Check for TypeScript errors
+     - Verify Next.js configuration
 
 ## Project Structure
 ```
@@ -76,10 +115,27 @@ musikquiz/
 │   │   ├── config.ts           # Main config file
 │   │   └── playlists.ts        # Playlist configurations
 │   ├── api/                    # API routes
+│   │   ├── discogs/           # Discogs API integration
+│   │   ├── spotify-playlist/  # Spotify playlist processing
+│   │   └── spotify-token/     # Spotify authentication
 │   └── ...                     # Other app files
 ├── docs/                       # Documentation
 └── ...                         # Other project files
 ```
+
+## API Integration
+
+### Spotify API
+- Used for fetching playlist data and song information
+- Requires Client ID and Client Secret
+- Handles token refresh automatically
+- Rate limiting is implemented
+
+### Discogs API
+- Used for retrieving original release dates
+- Requires API key
+- Implements rate limiting (1 request per second)
+- Handles various release formats and dates
 
 ## Security Notes
 - Never commit API keys or sensitive information
@@ -88,11 +144,33 @@ musikquiz/
 - Regularly rotate API keys and secrets
 
 ## Troubleshooting
+
+### Local Development
 1. If local development isn't working:
    - Check that `config.local.ts` exists and has valid API keys
    - Ensure all required environment variables are set
+   - Check browser console for errors
+   - Verify API endpoints are accessible
 
-2. If production deployment fails:
-   - Verify all environment variables are set in Vercel
-   - Check deployment logs for specific errors
-   - Ensure all required API keys are valid 
+2. If API calls fail:
+   - Verify API keys are correct
+   - Check rate limiting compliance
+   - Review API response logs
+
+### Production
+1. If deployment fails:
+   - Check Vercel deployment logs
+   - Verify environment variables
+   - Review build output
+
+2. If API calls fail in production:
+   - Check Vercel logs for API errors
+   - Verify environment variables are set correctly
+   - Monitor rate limiting
+
+## Getting Help
+If you encounter issues:
+1. Check the Vercel deployment logs
+2. Review the error messages in the browser console
+3. Check the API response logs
+4. Contact the development team with specific error details 
