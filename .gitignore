@@ -33,4 +33,7 @@ yarn-error.log*
 Thumbs.db
 
 # Local configuration
-app/config/config.local.ts 
+app/config/config.local.ts
+
+# Local documentation
+docs/SETUP.md 
