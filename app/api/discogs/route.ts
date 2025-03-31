@@ -1,4 +1,5 @@
 import { NextResponse, NextRequest } from 'next/server';
+import { config } from '@/app/config/config';
 
 const DISCOGS_API_URL = 'https://api.discogs.com';
 
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Artist and title are required' }, { status: 400 });
     }
 
-    const DISCOGS_API_KEY = process.env.DISCOGS_API_KEY;
+    const DISCOGS_API_KEY = config.discogs.apiKey;
     console.log('Discogs API Key present:', !!DISCOGS_API_KEY);
     console.log('Discogs API Key length:', DISCOGS_API_KEY?.length || 0);
     
