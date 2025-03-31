@@ -1,0 +1,13 @@
+// Example local configuration file
+// Copy this file to config.local.ts and add your API keys
+
+export const localConfig = {
+  spotify: {
+    clientId: 'your-spotify-client-id',
+    clientSecret: 'your-spotify-client-secret',
+  },
+  discogs: {
+    apiKey: 'your-discogs-api-key',
+  },
+  // Add other API keys and configurations as needed
+}; 

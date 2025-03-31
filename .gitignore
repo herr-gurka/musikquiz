@@ -30,4 +30,7 @@ yarn-error.log*
 
 # OS files
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Local configuration
+app/config/config.local.ts 
