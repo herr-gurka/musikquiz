@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { getOriginalReleaseDate } from '@/app/utils/discogs';
 import { getSpotifyAccessToken } from '@/app/utils/spotify';
 
@@ -65,19 +65,19 @@ async function getAccessToken(): Promise<string> {
   return data.access_token;
 }
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const playlistUrl = searchParams.get('url');
+    const searchParams = request.nextUrl.searchParams;
+    const url = searchParams.get('url');
     const startIndex = parseInt(searchParams.get('startIndex') || '0');
     const limit = parseInt(searchParams.get('limit') || '5');
 
-    if (!playlistUrl) {
+    if (!url) {
       return NextResponse.json({ error: 'Playlist URL is required' }, { status: 400 });
     }
 
     // Extract playlist ID from URL
-    const playlistId = playlistUrl.split('playlist/')[1]?.split('?')[0];
+    const playlistId = url.split('playlist/')[1]?.split('?')[0];
     if (!playlistId) {
       return NextResponse.json({ error: 'Invalid playlist URL' }, { status: 400 });
     }
