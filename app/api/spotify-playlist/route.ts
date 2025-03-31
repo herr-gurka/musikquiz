@@ -113,18 +113,24 @@ export async function GET(request: NextRequest) {
         console.log(`\nProcessing song: ${track.name} by ${track.artists[0].name}`);
         console.log('Current release date from Spotify:', track.album.release_date);
         
-        // Use the new Discogs API endpoint with absolute URL
-        const baseUrl = process.env.VERCEL_URL 
-          ? `https://${process.env.VERCEL_URL}`
-          : 'http://localhost:3000';
-        const discogsResponse = await fetch(
-          `${baseUrl}/api/discogs?artist=${encodeURIComponent(track.artists[0].name)}&title=${encodeURIComponent(track.name)}`
-        );
+        // Use the new Discogs API endpoint
+        const discogsUrl = new URL('/api/discogs', request.url);
+        discogsUrl.searchParams.set('artist', track.artists[0].name);
+        discogsUrl.searchParams.set('title', track.name);
+        
+        console.log('Calling Discogs API endpoint:', discogsUrl.toString());
+        const discogsResponse = await fetch(discogsUrl);
         
         if (!discogsResponse.ok) {
-          console.error('Discogs API error:', await discogsResponse.text());
+          const errorText = await discogsResponse.text();
+          console.error('Discogs API error:', {
+            status: discogsResponse.status,
+            statusText: discogsResponse.statusText,
+            error: errorText
+          });
           throw new Error('Failed to fetch from Discogs API');
         }
+        
         const releaseDate = await discogsResponse.json();
         console.log('Discogs result:', releaseDate);
         

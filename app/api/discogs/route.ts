@@ -8,12 +8,19 @@ export async function GET(request: NextRequest) {
     const artist = searchParams.get('artist');
     const title = searchParams.get('title');
 
+    console.log('\n=== Discogs API Request ===');
+    console.log('Request URL:', request.url);
+    console.log('Artist:', artist);
+    console.log('Title:', title);
+
     if (!artist || !title) {
+      console.error('Missing artist or title');
       return NextResponse.json({ error: 'Artist and title are required' }, { status: 400 });
     }
 
     const DISCOGS_API_KEY = process.env.DISCOGS_API_KEY;
     console.log('Discogs API Key present:', !!DISCOGS_API_KEY);
+    console.log('Discogs API Key length:', DISCOGS_API_KEY?.length || 0);
     
     if (!DISCOGS_API_KEY) {
       console.error('Discogs API key not configured');
@@ -42,7 +49,7 @@ export async function GET(request: NextRequest) {
 
     // Step 1: Search for releases
     const searchQuery = `${cleanedTitle} ${cleanedArtist}`;
-    console.log('Searching Discogs for:', searchQuery);
+    console.log('\nSearching Discogs for:', searchQuery);
     console.log('Cleaned title:', cleanedTitle);
     console.log('Cleaned artist:', cleanedArtist);
     
@@ -54,7 +61,11 @@ export async function GET(request: NextRequest) {
 
     if (!searchResponse.ok) {
       const errorText = await searchResponse.text();
-      console.error('Failed to search Discogs:', searchResponse.status, searchResponse.statusText, errorText);
+      console.error('Failed to search Discogs:', {
+        status: searchResponse.status,
+        statusText: searchResponse.statusText,
+        error: errorText
+      });
       return NextResponse.json({ error: 'Failed to search Discogs' }, { status: searchResponse.status });
     }
 
