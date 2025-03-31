@@ -1,8 +1,16 @@
 // Discogs API configuration
 const DISCOGS_API_URL = 'https://api.discogs.com';
+
+// Get the API key from environment variables
+const DISCOGS_API_KEY = process.env.DISCOGS_API_KEY;
+
+if (!DISCOGS_API_KEY) {
+  console.error('DISCOGS_API_KEY environment variable is not set');
+}
+
 const DISCOGS_HEADERS = {
   'User-Agent': 'MusikQuiz/1.0.0',
-  'Authorization': 'Discogs token=OUEcyNKKAwBNcDrJgYlelmzUJWkXzDIZVWTUqLDh'
+  'Authorization': `Discogs token=${DISCOGS_API_KEY}`
 };
 
 // Types for Discogs API responses

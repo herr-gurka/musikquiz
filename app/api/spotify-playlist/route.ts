@@ -1,5 +1,4 @@
 import { NextResponse, NextRequest } from 'next/server';
-import { getOriginalReleaseDate } from '@/app/utils/discogs';
 import { getSpotifyAccessToken } from '@/app/utils/spotify';
 
 const MONTHS = [
@@ -114,7 +113,12 @@ export async function GET(request: NextRequest) {
         console.log(`\nProcessing song: ${track.name} by ${track.artists[0].name}`);
         console.log('Current release date from Spotify:', track.album.release_date);
         
-        const releaseDate = await getOriginalReleaseDate(track.artists[0].name, track.name);
+        // Use the new Discogs API endpoint
+        const discogsResponse = await fetch(`/api/discogs?artist=${encodeURIComponent(track.artists[0].name)}&title=${encodeURIComponent(track.name)}`);
+        if (!discogsResponse.ok) {
+          throw new Error('Failed to fetch from Discogs API');
+        }
+        const releaseDate = await discogsResponse.json();
         console.log('Discogs result:', releaseDate);
         
         const spotifyDate = track.album.release_date.split('-');
