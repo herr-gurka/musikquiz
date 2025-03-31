@@ -1,4 +1,11 @@
 import { NextResponse } from 'next/server';
+import { getOriginalReleaseDate } from '@/app/utils/discogs';
+import { getSpotifyAccessToken } from '@/app/utils/spotify';
+
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
 
 interface SpotifyToken {
   access_token: string;
@@ -7,18 +14,21 @@ interface SpotifyToken {
 }
 
 interface SpotifyTrack {
-  track: {
+  name: string;
+  artists: { name: string }[];
+  album: {
     name: string;
-    artists: { name: string }[];
-    album: {
-      release_date: string;
-    };
+    release_date: string;
+  };
+  external_urls: {
+    spotify: string;
   };
 }
 
 interface SpotifyPlaylistResponse {
-  items: SpotifyTrack[];
-  total: number;
+  items: Array<{
+    track: SpotifyTrack;
+  }>;
 }
 
 let tokenData: SpotifyToken | null = null;
@@ -59,72 +69,100 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const playlistUrl = searchParams.get('url');
-
-    console.log('Fetching playlist from URL:', playlistUrl);
+    const startIndex = parseInt(searchParams.get('startIndex') || '0');
+    const limit = parseInt(searchParams.get('limit') || '5');
 
     if (!playlistUrl) {
-      console.log('Error: No playlist URL provided');
       return NextResponse.json({ error: 'Playlist URL is required' }, { status: 400 });
     }
 
     // Extract playlist ID from URL
-    const playlistId = playlistUrl.match(/playlist\/([a-zA-Z0-9]+)/)?.[1];
+    const playlistId = playlistUrl.split('playlist/')[1]?.split('?')[0];
     if (!playlistId) {
-      console.log('Error: Invalid playlist URL format');
-      return NextResponse.json({ error: 'Invalid playlist URL format. Please use a valid Spotify playlist URL.' }, { status: 400 });
+      return NextResponse.json({ error: 'Invalid playlist URL' }, { status: 400 });
     }
 
-    console.log('Extracted playlist ID:', playlistId);
+    // Get playlist tracks from Spotify
+    const playlistResponse = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50&offset=${startIndex}`, {
+      headers: {
+        'Authorization': `Bearer ${await getAccessToken()}`,
+      },
+    });
 
-    const token = await getAccessToken();
-    console.log('Got Spotify access token');
+    if (!playlistResponse.ok) {
+      const error = await playlistResponse.json();
+      return NextResponse.json({ error: error.error?.message || 'Failed to fetch playlist' }, { status: playlistResponse.status });
+    }
 
-    const response = await fetch(
-      `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+    const playlistData = await playlistResponse.json();
+    const tracks = playlistData.items.map((item: any) => item.track);
+
+    if (!tracks.length) {
+      return NextResponse.json({ songs: [], total: 0, hasMore: false });
+    }
+
+    // Process tracks one at a time with proper rate limiting
+    const transformedSongs = [];
+    const totalTracks = playlistData.total;
+    const tracksToProcess = tracks.slice(0, limit);
+
+    for (const track of tracksToProcess) {
+      try {
+        // Add a delay before each Discogs request to respect rate limits
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        console.log(`\nProcessing song: ${track.name} by ${track.artists[0].name}`);
+        console.log('Current release date from Spotify:', track.album.release_date);
+        
+        const releaseDate = await getOriginalReleaseDate(track.artists[0].name, track.name);
+        console.log('Discogs result:', releaseDate);
+        
+        const spotifyDate = track.album.release_date.split('-');
+        console.log('Spotify date parts:', spotifyDate);
+        
+        const transformedSong = {
+          artist: track.artists[0].name,
+          title: track.name,
+          releaseYear: releaseDate?.date?.year || spotifyDate[0] || 'N/A',
+          releaseMonth: releaseDate?.date?.month || (spotifyDate[1] ? MONTHS[parseInt(spotifyDate[1]) - 1] : 'N/A'),
+          releaseDay: releaseDate?.date?.day || spotifyDate[2] || 'N/A',
+          currentReleaseDate: track.album.release_date,
+          spotifyUrl: track.external_urls.spotify,
+          source: releaseDate?.date ? 'discogs' : 'spotify',
+          sourceUrl: releaseDate?.releaseId ? `https://www.discogs.com/release/${releaseDate.releaseId}` : track.external_urls.spotify
+        };
+        
+        console.log('Transformed song data:', transformedSong);
+        transformedSongs.push(transformedSong);
+      } catch (error) {
+        console.error(`Error processing track ${track.name}:`, error);
+        console.error('Full error details:', error);
+        
+        const spotifyDate = track.album.release_date.split('-');
+        const fallbackSong = {
+          artist: track.artists[0].name,
+          title: track.name,
+          releaseYear: spotifyDate[0] || 'N/A',
+          releaseMonth: spotifyDate[1] ? MONTHS[parseInt(spotifyDate[1]) - 1] : 'N/A',
+          releaseDay: spotifyDate[2] || 'N/A',
+          currentReleaseDate: track.album.release_date,
+          spotifyUrl: track.external_urls.spotify,
+          source: 'spotify',
+          sourceUrl: track.external_urls.spotify
+        };
+        
+        console.log('Falling back to Spotify data:', fallbackSong);
+        transformedSongs.push(fallbackSong);
       }
-    );
-
-    if (response.status === 404) {
-      console.log('Error: Playlist not found');
-      return NextResponse.json({ error: 'Playlist not found. Please check if the URL is correct and the playlist is public.' }, { status: 404 });
     }
 
-    if (response.status === 403) {
-      console.log('Error: Playlist is private');
-      return NextResponse.json({ error: 'This playlist is private. Please make it public or use a different playlist.' }, { status: 403 });
-    }
-
-    if (!response.ok) {
-      console.log('Error: Spotify API returned status:', response.status);
-      return NextResponse.json({ error: 'Failed to fetch playlist.' }, { status: 500 });
-    }
-
-    const data: SpotifyPlaylistResponse = await response.json();
-    console.log(`Fetched ${data.items.length} tracks from playlist`);
-
-    if (!data.items || data.items.length === 0) {
-      console.log('Error: Playlist is empty');
-      return NextResponse.json({ error: 'This playlist is empty. Please add some songs and try again.' }, { status: 400 });
-    }
-
-    // Transform the data into our song format
-    const songs = data.items.map(item => ({
-      title: item.track.name,
-      artist: item.track.artists[0].name,
-      releaseYear: item.track.album.release_date.split('-')[0],
-    }));
-
-    console.log('Transformed songs:', songs);
-    return NextResponse.json(songs);
+    return NextResponse.json({
+      songs: transformedSongs,
+      total: totalTracks,
+      hasMore: startIndex + transformedSongs.length < totalTracks
+    });
   } catch (error) {
-    console.error('Error fetching playlist:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch playlist. Please try again later.' },
-      { status: 500 }
-    );
+    console.error('Error in Spotify playlist route:', error);
+    return NextResponse.json({ error: 'Failed to process playlist' }, { status: 500 });
   }
 } 

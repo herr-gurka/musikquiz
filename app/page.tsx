@@ -4,25 +4,55 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { predefinedPlaylists } from './config/playlists';
 
+interface Song {
+  title: string;
+  artist: string;
+  releaseYear: string;
+  currentReleaseDate: string;
+  spotifyUrl?: string;
+  source: 'wikipedia' | 'musicbrainz' | 'spotify';
+  wikipediaSearch: {
+    date: string | null;
+    source: string;
+  };
+  musicbrainzSearch: {
+    originalTitle: string;
+    cleanedTitle: string;
+    originalArtist: string;
+    cleanedArtist: string;
+    searchQuery: string;
+    foundDate: string;
+  };
+}
+
 export default function Home() {
   const router = useRouter();
-  const [minYear, setMinYear] = useState('');
-  const [maxYear, setMaxYear] = useState('');
+  const [playlistUrl, setPlaylistUrl] = useState('');
+  const [startYear, setStartYear] = useState('1900');
+  const [endYear, setEndYear] = useState('2025');
   const [selectedPlaylist, setSelectedPlaylist] = useState('');
-  const [customPlaylistUrl, setCustomPlaylistUrl] = useState('');
-  const [useCustomUrl, setUseCustomUrl] = useState(false);
+  const [songs, setSongs] = useState<Song[]>([]);
+  const [currentSongIndex, setCurrentSongIndex] = useState(0);
+  const [showAnswer, setShowAnswer] = useState(false);
+  const [score, setScore] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showPlaylistForm, setShowPlaylistForm] = useState(true);
+  const [showQuiz, setShowQuiz] = useState(false);
+  const [showResults, setShowResults] = useState(false);
+  const [selectedSource, setSelectedSource] = useState<'predefined' | 'custom'>('predefined');
 
   const currentYear = new Date().getFullYear();
 
   const isFormValid = () => {
-    if (!minYear || !maxYear) return false;
-    if (parseInt(minYear) > parseInt(maxYear)) return false;
-    if (parseInt(minYear) < 1900 || parseInt(maxYear) > currentYear) return false;
+    if (!startYear || !endYear) return false;
+    if (parseInt(startYear) > parseInt(endYear)) return false;
+    if (parseInt(startYear) < 1900 || parseInt(endYear) > currentYear) return false;
     
-    if (useCustomUrl) {
-      if (!customPlaylistUrl) return false;
+    if (selectedSource === 'custom') {
+      if (!playlistUrl) return false;
       const spotifyPlaylistRegex = /^https:\/\/open\.spotify\.com\/playlist\/[a-zA-Z0-9]+/;
-      return spotifyPlaylistRegex.test(customPlaylistUrl);
+      return spotifyPlaylistRegex.test(playlistUrl);
     } else {
       return selectedPlaylist !== '';
     }
@@ -32,10 +62,43 @@ export default function Home() {
     e.preventDefault();
     if (!isFormValid()) return;
 
-    const songList = useCustomUrl ? customPlaylistUrl : predefinedPlaylists.find(p => p.id === selectedPlaylist)?.url;
+    const songList = selectedSource === 'custom' ? playlistUrl : predefinedPlaylists.find(p => p.id === selectedPlaylist)?.url;
     if (!songList) return;
 
-    router.push(`/quiz?minYear=${minYear}&maxYear=${maxYear}&songList=${encodeURIComponent(songList)}`);
+    router.push(`/quiz?minYear=${startYear}&maxYear=${endYear}&songList=${encodeURIComponent(songList)}`);
+  };
+
+  const fetchSongsFromSpotify = async (playlistUrl: string) => {
+    try {
+      console.log('Fetching songs from Spotify playlist');
+      const response = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(playlistUrl)}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch songs from Spotify playlist');
+      }
+      const songs = await response.json();
+      console.log('Received songs from Spotify playlist:', songs);
+      
+      // Log MusicBrainz search details for each song
+      songs.forEach((song: any) => {
+        if (song.musicbrainzSearch) {
+          console.log('\n=== MusicBrainz Search Details ===');
+          console.log('Song:', song.title);
+          console.log('Original Title:', song.musicbrainzSearch.originalTitle);
+          console.log('Cleaned Title:', song.musicbrainzSearch.cleanedTitle);
+          console.log('Original Artist:', song.musicbrainzSearch.originalArtist);
+          console.log('Cleaned Artist:', song.musicbrainzSearch.cleanedArtist);
+          console.log('Search Query:', song.musicbrainzSearch.searchQuery);
+          console.log('Found Date:', song.musicbrainzSearch.foundDate);
+          console.log('Current Release Date:', song.currentReleaseDate);
+          console.log('Final Release Year:', song.releaseYear);
+        }
+      });
+
+      return songs;
+    } catch (error) {
+      console.error('Error fetching songs:', error);
+      throw error;
+    }
   };
 
   return (
@@ -49,14 +112,14 @@ export default function Home() {
           {/* Year Range Inputs */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label htmlFor="minYear" className="block text-sm font-medium text-gray-700 mb-1">
+              <label htmlFor="startYear" className="block text-sm font-medium text-gray-700 mb-1">
                 From Year
               </label>
               <input
                 type="number"
-                id="minYear"
-                value={minYear}
-                onChange={(e) => setMinYear(e.target.value)}
+                id="startYear"
+                value={startYear}
+                onChange={(e) => setStartYear(e.target.value)}
                 min="1900"
                 max={currentYear}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
@@ -64,14 +127,14 @@ export default function Home() {
               />
             </div>
             <div>
-              <label htmlFor="maxYear" className="block text-sm font-medium text-gray-700 mb-1">
+              <label htmlFor="endYear" className="block text-sm font-medium text-gray-700 mb-1">
                 To Year
               </label>
               <input
                 type="number"
-                id="maxYear"
-                value={maxYear}
-                onChange={(e) => setMaxYear(e.target.value)}
+                id="endYear"
+                value={endYear}
+                onChange={(e) => setEndYear(e.target.value)}
                 min="1900"
                 max={currentYear}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
@@ -86,8 +149,8 @@ export default function Home() {
               <label className="flex items-center">
                 <input
                   type="radio"
-                  checked={!useCustomUrl}
-                  onChange={() => setUseCustomUrl(false)}
+                  checked={selectedSource === 'predefined'}
+                  onChange={() => setSelectedSource('predefined')}
                   className="text-purple-600 focus:ring-purple-500"
                 />
                 <span className="ml-2 text-gray-700">Choose playlist</span>
@@ -95,15 +158,15 @@ export default function Home() {
               <label className="flex items-center">
                 <input
                   type="radio"
-                  checked={useCustomUrl}
-                  onChange={() => setUseCustomUrl(true)}
+                  checked={selectedSource === 'custom'}
+                  onChange={() => setSelectedSource('custom')}
                   className="text-purple-600 focus:ring-purple-500"
                 />
                 <span className="ml-2 text-gray-700">Enter playlist URL</span>
               </label>
             </div>
 
-            {!useCustomUrl ? (
+            {selectedSource === 'predefined' ? (
               <div>
                 <label htmlFor="playlist" className="block text-sm font-medium text-gray-700 mb-1">
                   Select Playlist
@@ -122,7 +185,7 @@ export default function Home() {
                   ))}
                 </select>
                 {selectedPlaylist && (
-                  <p className="mt-1 text-sm text-gray-500">
+                  <p className="mt-2 text-sm text-gray-600">
                     {predefinedPlaylists.find(p => p.id === selectedPlaylist)?.description}
                   </p>
                 )}
@@ -130,19 +193,16 @@ export default function Home() {
             ) : (
               <div>
                 <label htmlFor="playlistUrl" className="block text-sm font-medium text-gray-700 mb-1">
-                  Spotify Playlist URL
+                  Custom Playlist URL
                 </label>
                 <input
                   type="text"
                   id="playlistUrl"
-                  value={customPlaylistUrl}
-                  onChange={(e) => setCustomPlaylistUrl(e.target.value)}
+                  value={playlistUrl}
+                  onChange={(e) => setPlaylistUrl(e.target.value)}
                   placeholder="https://open.spotify.com/playlist/..."
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                 />
-                <p className="mt-1 text-sm text-gray-500">
-                  Enter a public Spotify playlist URL
-                </p>
               </div>
             )}
           </div>
