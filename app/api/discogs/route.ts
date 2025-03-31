@@ -13,7 +13,10 @@ export async function GET(request: NextRequest) {
     }
 
     const DISCOGS_API_KEY = process.env.DISCOGS_API_KEY;
+    console.log('Discogs API Key present:', !!DISCOGS_API_KEY);
+    
     if (!DISCOGS_API_KEY) {
+      console.error('Discogs API key not configured');
       return NextResponse.json({ error: 'Discogs API key not configured' }, { status: 500 });
     }
 
@@ -39,12 +42,19 @@ export async function GET(request: NextRequest) {
 
     // Step 1: Search for releases
     const searchQuery = `${cleanedTitle} ${cleanedArtist}`;
+    console.log('Searching Discogs for:', searchQuery);
+    console.log('Cleaned title:', cleanedTitle);
+    console.log('Cleaned artist:', cleanedArtist);
+    
     const searchUrl = `${DISCOGS_API_URL}/database/search?q=${encodeURIComponent(searchQuery)}&type=release&per_page=20&sort=year&sort_order=asc`;
+    console.log('Search URL:', searchUrl);
     
     const searchResponse = await fetch(searchUrl, { headers });
     await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
 
     if (!searchResponse.ok) {
+      const errorText = await searchResponse.text();
+      console.error('Failed to search Discogs:', searchResponse.status, searchResponse.statusText, errorText);
       return NextResponse.json({ error: 'Failed to search Discogs' }, { status: searchResponse.status });
     }
 
