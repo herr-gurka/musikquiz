@@ -137,6 +137,46 @@ musikquiz/
 - Implements rate limiting (1 request per second)
 - Handles various release formats and dates
 
+## Release Date Information
+
+The application uses Discogs API to get accurate release dates for songs. Here's how we handle the search and selection process:
+
+### Search Strategy
+1. Search for the song using both artist and title: `${artist} ${title}`
+2. Filter out live albums and compilations
+3. For each potential match:
+   - Get master release details to check tracklist
+   - Look for exact or partial title matches
+   - Calculate a base score based on artist and track matching
+
+### Release Selection Logic
+The key to getting correct release dates is prioritizing the year over other factors:
+
+1. **Year Priority**:
+   - Always select the earliest release year first
+   - Only consider other factors (artist match, track match) when comparing releases from the same year
+   - This ensures we get the original release date, not later re-releases or singles
+
+2. **Scoring System**:
+   - Base score (80 points max):
+     - 40 points for exact artist match (20 for partial)
+     - 40 points for exact track match (20 for partial)
+   - Format bonus (10 points):
+     - Only applied when comparing releases from the same year
+     - Helps distinguish between albums and singles when years are equal
+
+3. **Example**:
+   For "Hook" by Blues Traveler:
+   - 1994 album "Four" (correct selection)
+   - 1995 single (skipped because 1994 is earlier)
+   - Even if the 1995 single had a better artist/track match, we still select the 1994 album
+
+### Important Notes
+- We don't use year in the scoring system to avoid giving later releases higher scores
+- We don't filter out singles/EPs in the initial search to ensure we don't miss any releases
+- Format type (album vs single) is only considered when comparing releases from the same year
+- The search is ordered by year ascending to find the earliest release first
+
 ## Security Notes
 - Never commit API keys or sensitive information
 - Keep `config.local.ts` secure and local to your machine
@@ -173,4 +213,45 @@ If you encounter issues:
 1. Check the Vercel deployment logs
 2. Review the error messages in the browser console
 3. Check the API response logs
-4. Contact the development team with specific error details 
+4. Contact the development team with specific error details
+
+## Development Best Practices
+
+### Code Changes
+- Always make changes in a controlled and systematic way
+- Modify one file at a time and verify changes before moving to the next
+- Never attempt to change multiple files simultaneously
+- Test changes locally before committing
+- Keep commits focused and atomic
+
+### API Integration
+// ... existing code ... 
+
+## Development
+The application is built with:
+- Next.js 14
+- TypeScript
+- Tailwind CSS
+- Spotify Web API
+- Discogs API
+
+## Deployment
+1. Build the application:
+   ```bash
+   npm run build
+   # or
+   yarn build
+   ```
+2. Start the production server:
+   ```bash
+   npm start
+   # or
+   yarn start
+   ```
+
+## Troubleshooting
+If you encounter issues:
+1. Check the environment variables are set correctly
+2. Verify API keys have the correct permissions
+3. Check the browser console for errors
+4. Review the server logs for API errors 

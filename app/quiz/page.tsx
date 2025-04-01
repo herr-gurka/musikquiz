@@ -67,129 +67,74 @@ function QuizContent() {
   const [totalSongs, setTotalSongs] = useState(0);
   const [completedSongs, setCompletedSongs] = useState<Song[]>([]);
   const fetchStartedRef = useRef(false);
+  const songList = searchParams.get('songList');
+  const [hasMore, setHasMore] = useState(false);
 
-  const loadMoreSongs = async (startIndex: number) => {
+  const loadMoreSongs = async (startIndex: number, limit: number) => {
     try {
-      setIsLoadingMore(true);
-      const songList = searchParams.get('songList');
-      if (!songList) {
-        throw new Error('No song list provided');
-      }
-
-      // Only use pagination for Spotify playlists
-      if (songList.includes('spotify.com/playlist')) {
-        const response = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(songList)}&startIndex=${startIndex}&limit=5`);
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to fetch Spotify playlist');
-        }
-        const data: PlaylistResponse = await response.json();
-        
-        // Add initial songs to the list
-        setSongs(prevSongs => [...prevSongs, ...data.songs]);
-        setTotalSongs(data.total);
-
-        // If there are remaining tracks, process them in the background
-        if (data.remainingTracks && data.remainingTracks.length > 0) {
-          // Process remaining tracks one by one
-          for (const track of data.remainingTracks) {
-            try {
-              const response = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(songList)}&startIndex=${startIndex + songs.length}&limit=1`);
-              if (response.ok) {
-                const newData = await response.json();
-                if (newData.songs.length > 0) {
-                  setSongs(prevSongs => [...prevSongs, ...newData.songs]);
-                }
-              }
-            } catch (error) {
-              console.error('Error processing remaining track:', error);
-            }
-          }
-        }
-      } else {
-        // For CSV files, load everything at once
-        const response = await fetch(songList);
-        const csvText = await response.text();
-        
-        // Helper function to parse CSV line with quotes
-        const parseCSVLine = (line: string) => {
-          const result = [];
-          let current = '';
-          let inQuotes = false;
-          
-          for (let i = 0; i < line.length; i++) {
-            const char = line[i];
-            if (char === '"') {
-              inQuotes = !inQuotes;
-            } else if (char === ',' && !inQuotes) {
-              result.push(current);
-              current = '';
-            } else {
-              current += char;
-            }
-          }
-          result.push(current);
-          return result.map(field => field.replace(/^"|"$/g, '').trim());
-        };
-        
-        // Parse CSV
-        const parsedSongs = csvText
-          .split('\n')
-          .slice(1) // Skip header
-          .map(line => {
-            const [title, artist, releaseYear] = parseCSVLine(line);
-            return {
-              artist,
-              title,
-              releaseYear,
-              releaseMonth: 'N/A',
-              releaseDay: 'N/A',
-              currentReleaseDate: releaseYear,
-              spotifyUrl: undefined,
-              source: undefined,
-              sourceUrl: undefined
-            };
-          });
-        
-        setSongs(parsedSongs);
-        setTotalSongs(parsedSongs.length);
-      }
+      console.log('Loading songs:', { startIndex, limit });
+      const response = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(songList || '')}&startIndex=${startIndex}&limit=${limit}`);
       
-      // If this is the first load, also set up the quiz
-      if (startIndex === 0) {
-        setCurrentSongIndex(0);
-        setCompletedSongs([]);
-        setIsFlipped(false);
-        setHasBeenFlipped(false);
+      if (!response.ok) {
+        const error = await response.json();
+        console.error('Failed to load songs:', error);
+        setError(error.error || 'Failed to load songs');
+        return;
       }
+
+      const data = await response.json();
+      console.log('Received songs data:', {
+        songsCount: data.songs?.length || 0,
+        total: data.total,
+        hasMore: data.hasMore
+      });
+
+      if (!data.songs) {
+        console.error('No songs in response:', data);
+        setError('No songs found in playlist');
+        return;
+      }
+
+      setSongs(prevSongs => {
+        const newSongs = [...prevSongs];
+        data.songs.forEach((song: any) => {
+          const existingIndex = newSongs.findIndex(s => s.title === song.title);
+          if (existingIndex === -1) {
+            newSongs.push(song);
+          }
+        });
+        return newSongs;
+      });
+
+      setHasMore(data.hasMore);
+      setTotalSongs(data.total);
+      setLoading(false); // Set loading to false after we have songs
     } catch (error) {
       console.error('Error loading songs:', error);
-      setError('Failed to load songs. Please try again.');
+      setError('Failed to load songs');
+      setLoading(false);
+    }
+  };
+
+  // Load songs when component mounts
+  useEffect(() => {
+    if (!songList || fetchStartedRef.current) return;
+
+    fetchStartedRef.current = true;
+    setLoading(true);
+    loadMoreSongs(0, 5);
+  }, [songList]); // Only depend on songList
+
+  // Load more songs when scrolling
+  const loadMore = async () => {
+    if (isLoadingMore || !hasMore) return;
+    setIsLoadingMore(true);
+    try {
+      await loadMoreSongs(songs.length, 5);
     } finally {
       setIsLoadingMore(false);
     }
   };
-
-  useEffect(() => {
-    const fetchSongs = async () => {
-      if (fetchStartedRef.current) return;
-      fetchStartedRef.current = true;
-
-      try {
-        await loadMoreSongs(0);
-      } catch (error) {
-        console.error('Error loading songs:', error);
-        setError('Failed to load songs. Please try again.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    const songList = searchParams.get('songList');
-    if (songList) {
-      fetchSongs();
-    }
-  }, [searchParams]);
 
   const handleFlip = () => {
     setIsFlipped(!isFlipped);
@@ -207,11 +152,8 @@ function QuizContent() {
       setHasBeenFlipped(false);
       
       // If we're getting close to the end of our loaded songs, load more
-      const songList = searchParams.get('songList');
-      if (songList?.includes('spotify.com/playlist') && 
-          currentSongIndex >= songs.length - 3 && 
-          songs.length < totalSongs) {
-        loadMoreSongs(songs.length);
+      if (currentSongIndex >= songs.length - 3 && songs.length < totalSongs) {
+        loadMoreSongs(currentSongIndex + 1, 50);
       }
     }
   };
