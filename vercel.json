@@ -1,0 +1,17 @@
+{
+  "routes": [
+    {
+      "src": "/.*",
+      "continue": true,
+      "headers": {
+        "deploymentProtection": "*"
+      }
+    },
+    {
+      "src": "/api/process-job-worker",
+      "headers": {
+        "deploymentProtection": "false"
+      }
+    }
+  ]
+}
