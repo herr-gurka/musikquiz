@@ -1,14 +1,38 @@
 import { NextResponse, NextRequest } from 'next/server';
 import { config } from '@/app/config/config';
+import { Redis } from "@upstash/redis"; // Import Upstash Redis client
+import { v4 as uuidv4 } from 'uuid'; // Import uuid for job IDs
 
 const DISCOGS_API_URL = 'https://api.discogs.com';
 
-interface Song {
+// Redefine ProcessedSong without extends
+export interface ProcessedSong {
+  // Fields from original Song interface
   artist: string;
   title: string;
-  currentReleaseDate: string;
+  currentReleaseDate: string; // From Spotify initially
+  spotifyUrl: string;
+  // Added fields
+  releaseYear: string;
+  releaseMonth: string;
+  releaseDay: string;
+  source: 'deezer' | 'discogs' | 'spotify'; 
+  sourceUrl?: string;
+}
+
+// Keep original Song interface
+export interface Song {
+  artist: string;
+  title: string;
+  currentReleaseDate: string; // From Spotify initially
   spotifyUrl: string;
 }
+
+// Initialize Redis client using environment variables
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL || '', // Use Vercel's standard env var names
+  token: process.env.KV_REST_API_TOKEN || '',
+});
 
 function getMonthName(monthNum: string | undefined): string {
   if (!monthNum) return 'N/A';
@@ -18,7 +42,7 @@ function getMonthName(monthNum: string | undefined): string {
     'July', 'August', 'September', 'October', 'November', 'December'][num - 1];
 }
 
-async function getDiscogsData(song: Song) {
+async function getDiscogsData(song: Song): Promise<ProcessedSong> {
   try {
     // Add a delay before each Discogs request to respect rate limits
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -206,7 +230,10 @@ async function getDiscogsData(song: Song) {
 
     console.log('\nFinal release date:', releaseDate);
     return {
-      ...song,
+      artist: song.artist,
+      title: song.title,
+      currentReleaseDate: song.currentReleaseDate,
+      spotifyUrl: song.spotifyUrl,
       releaseYear: releaseDate.year,
       releaseMonth: releaseDate.month,
       releaseDay: releaseDate.day,
@@ -214,7 +241,7 @@ async function getDiscogsData(song: Song) {
       sourceUrl: `https://www.discogs.com/master/${bestMatch.id}`
     };
   } catch (error) {
-    console.error(`Error processing song ${song.title}:`, error);
+    console.error(`Error processing song ${song.title} with Discogs:`, error);
     return fallbackToSpotify(song);
   }
 }
@@ -264,10 +291,13 @@ function calculateMatchScore(result: any, cleanedArtist: string, cleanedTitle: s
   return score;
 }
 
-// Helper function to return Spotify data
-function fallbackToSpotify(song: Song) {
+// Ensure fallbackToSpotify returns the full ProcessedSong structure
+function fallbackToSpotify(song: Song): ProcessedSong {
   return {
-    ...song,
+    artist: song.artist,
+    title: song.title,
+    currentReleaseDate: song.currentReleaseDate,
+    spotifyUrl: song.spotifyUrl,
     releaseYear: song.currentReleaseDate.split('-')[0] || 'N/A',
     releaseMonth: getMonthName(song.currentReleaseDate.split('-')[1]),
     releaseDay: song.currentReleaseDate.split('-')[2] || 'N/A',
@@ -276,41 +306,145 @@ function fallbackToSpotify(song: Song) {
   };
 }
 
+// Simplified getReleaseData function - Discogs first
+async function getReleaseData(song: Song): Promise<ProcessedSong> {
+  console.log('>>> Entering getReleaseData for:', song.title);
+  console.log(`Attempting Discogs lookup for: ${song.title}`);
+  
+  // Directly call getDiscogsData. It already contains the logic to fallback to Spotify if needed.
+  try {
+    const processedSong = await getDiscogsData(song); 
+    
+    // Add a check to ensure we have *some* result, even if it's the fallback
+    if (!processedSong) { 
+       // This case should theoretically not happen if getDiscogsData always returns ProcessedSong
+       console.error(`Catastrophic failure: getDiscogsData returned undefined/null for ${song.title}. Using basic fallback.`);
+       return fallbackToSpotify(song); // Return fallback explicitly just in case
+    }
+    
+    // Ensure releaseYear is valid before returning, otherwise use fallback
+    if (!processedSong.releaseYear || processedSong.releaseYear === 'N/A') {
+       console.warn(`Discogs lookup for ${song.title} resulted in invalid year (${processedSong.releaseYear}). Using Spotify fallback.`);
+       return fallbackToSpotify(song);
+    }
+
+    return processedSong;
+
+  } catch (error) {
+      console.error(`Error during getDiscogsData call for ${song.title}:`, error);
+      console.log(`Falling back to Spotify due to error for: ${song.title}`);
+      return fallbackToSpotify(song); // Fallback if getDiscogsData throws an unhandled error
+  }
+}
+
+// --- Background Processing Function --- 
+async function processRemainingSongsInBackground(
+    remainingSongs: Song[], 
+    jobId: string, 
+    initialReleaseYear: string
+) {
+    console.log(`[Job ${jobId}] Starting background processing for ${remainingSongs.length} songs.`);
+    const resultsKey = `${jobId}:results`;
+    const yearsKey = `${jobId}:years`; 
+    const statusKey = `${jobId}:status`;
+
+    try {
+        // Initialize Redis store for this job
+        await redis.set(yearsKey, JSON.stringify([initialReleaseYear]), { ex: 3600 }); 
+        await redis.set(statusKey, 'processing', { ex: 3600 });
+        await redis.del(resultsKey);
+
+        const processedYears = new Set<string>([initialReleaseYear]);
+        let count = 0;
+
+        for (const song of remainingSongs) {
+            count++;
+            console.log(`[Job ${jobId}] Processing song ${count}/${remainingSongs.length}: ${song.title}`);
+            try {
+                const processedSong = await getReleaseData(song);
+                
+                if (processedSong && processedSong.releaseYear && processedSong.releaseYear !== 'N/A') {
+                    if (!processedYears.has(processedSong.releaseYear)) {
+                        processedYears.add(processedSong.releaseYear);
+                        // Revert: Push the STRINGIFIED object to list in Redis
+                        await redis.lpush(resultsKey, JSON.stringify(processedSong));
+                        // Update the set of years in Redis (still needs stringify for the Set)
+                        await redis.set(yearsKey, JSON.stringify(Array.from(processedYears)), { ex: 3600 });
+                        console.log(`[Job ${jobId}] Added song ${song.title} (${processedSong.releaseYear})`);
+                    } else {
+                        console.log(`[Job ${jobId}] Skipping song ${song.title} - year ${processedSong.releaseYear} already processed.`);
+                    }
+                } else {
+                    console.log(`[Job ${jobId}] Skipping song ${song.title} - failed processing or invalid year.`);
+                }
+            } catch (songError) {
+                console.error(`[Job ${jobId}] Error processing individual song ${song.title}:`, songError);
+                // Continue to next song
+            }
+            // Optional: Add small delay between processing each song in background?
+            // await new Promise(resolve => setTimeout(resolve, 100)); 
+        }
+
+        // Mark job as complete
+        await redis.set(statusKey, 'complete', { ex: 3600 });
+        console.log(`[Job ${jobId}] Background processing complete.`);
+
+    } catch (error) {
+        console.error(`[Job ${jobId}] Error during background processing:`, error);
+        await redis.set(statusKey, 'failed', { ex: 3600 });
+    }
+}
+
+// --- API Endpoint --- 
 export async function POST(request: NextRequest) {
   try {
-    const songs = await request.json();
-    if (!Array.isArray(songs)) {
-      return NextResponse.json({ error: 'Songs must be an array' }, { status: 400 });
+    // Expect payload: { firstSong: Song, remainingSongs: Song[] }
+    const payload = await request.json();
+    const { firstSong, remainingSongs }: { firstSong: Song, remainingSongs: Song[] } = payload;
+
+    if (!firstSong || !Array.isArray(remainingSongs)) {
+      return NextResponse.json({ error: 'Invalid payload structure. Expecting { firstSong, remainingSongs }.' }, { status: 400 });
     }
 
-    console.log(`Processing ${songs.length} songs in parallel batches...`);
+    console.log(`Received request: Process 1 song now, ${remainingSongs.length} in background.`);
 
-    // Process songs in batches of 3
-    const batchSize = 3;
-    const processedSongs = [];
+    // --- Process First Song --- 
+    console.log(`Processing first song synchronously: "${firstSong.title}"`);
+    let processedFirstSong: ProcessedSong;
+    try {
+        processedFirstSong = await getReleaseData(firstSong);
+    } catch (error) {
+        console.error(`Critical error processing first song ${firstSong.title}:`, error);
+        // If first song fails, fallback to Spotify data for it and continue background for others
+        processedFirstSong = fallbackToSpotify(firstSong);
+        // Optionally, could decide to fail the whole request here if first song is critical
+        // return NextResponse.json({ error: 'Failed to process initial song' }, { status: 500 });
+    }
     
-    for (let i = 0; i < songs.length; i += batchSize) {
-      const batch = songs.slice(i, i + batchSize);
-      console.log(`\nProcessing batch ${Math.floor(i/batchSize) + 1} of ${Math.ceil(songs.length/batchSize)}`);
-      console.log('Batch songs:', batch.map(s => s.title).join(', '));
-
-      // Process batch in parallel
-      const batchResults = await Promise.all(
-        batch.map(song => getDiscogsData(song))
-      );
-
-      processedSongs.push(...batchResults);
-
-      // Add a small delay between batches to respect rate limits
-      if (i + batchSize < songs.length) {
-        console.log('Waiting 2 seconds before next batch...');
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
+    if (!processedFirstSong.releaseYear || processedFirstSong.releaseYear === 'N/A') {
+        console.warn(`First song "${firstSong.title}" could not be processed with a valid year. Using fallback data.`);
+        // Ensure it has some year, even if 'N/A' or from Spotify fallback
     }
 
-    return NextResponse.json(processedSongs);
+    // --- Start Background Processing --- 
+    const jobId = uuidv4(); // Generate unique job ID
+    const initialReleaseYear = processedFirstSong.releaseYear; // Get year from the processed first song
+
+    // Trigger background task - DO NOT AWAIT
+    processRemainingSongsInBackground(remainingSongs, jobId, initialReleaseYear).catch(err => {
+        console.error(`[Job ${jobId}] Background task initiation failed:`, err);
+        redis.set(`${jobId}:status`, 'init_failed', { ex: 3600 }).catch(); // Attempt to mark status using redis
+    });
+    console.log(`[Job ${jobId}] Initiated background task for ${remainingSongs.length} songs.`);
+
+    // --- Return Initial Response --- 
+    return NextResponse.json({
+        processedSong: processedFirstSong, // Send the first song processed
+        jobId: jobId                     // Send the ID for the background job
+    });
+
   } catch (error) {
-    console.error('Error processing songs:', error);
-    return NextResponse.json({ error: 'Failed to process songs' }, { status: 500 });
+    console.error('Error in POST /api/process-songs:', error);
+    return NextResponse.json({ error: 'Failed to process songs request' }, { status: 500 });
   }
 } 

@@ -67,390 +67,6 @@ async function getAccessToken(): Promise<string> {
   return data.access_token;
 }
 
-// Helper function to calculate match score between a Discogs result and our search terms
-async function calculateMatchScore(result: any, cleanedArtist: string, cleanedTitle: string, headers: any): Promise<{ score: number; trackNumber?: number }> {
-  // First check if the artist matches
-  const resultTitle = result.title.toLowerCase();
-  let artistScore = 0;
-
-  // Handle various artist formats like "Artist (2)" or "Artist, The"
-  const artistPart = resultTitle.split(' - ')[0]
-    .replace(/\(\d+\)/g, '') // Remove numbers in parentheses
-    .replace(/,\s*the$/i, '') // Remove ", The" at the end
-    .trim();
-
-  if (artistPart === cleanedArtist) {
-    artistScore = 40; // Exact artist match
-  } else if (artistPart.includes(cleanedArtist) || cleanedArtist.includes(artistPart)) {
-    artistScore = 20; // Partial artist match
-  }
-
-  if (artistScore === 0) {
-    return { score: 0 }; // If artist doesn't match at all, don't bother checking tracks
-  }
-
-  // Get the master release details to check the tracklist
-  const masterUrl = `${DISCOGS_API_URL}/masters/${result.id}`;
-  console.log('\nChecking tracklist for master:', masterUrl);
-  
-  try {
-    const masterResponse = await fetch(masterUrl, { headers });
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
-
-    if (!masterResponse.ok) {
-      console.log('Failed to fetch master details');
-      return { score: 0 };
-    }
-
-    const masterData = await masterResponse.json();
-    console.log('Found tracklist with', masterData.tracklist?.length || 0, 'tracks');
-
-    // Look for our song in the tracklist
-    let bestTrackScore = 0;
-    let matchedTrackNumber: number | undefined = undefined;
-
-    masterData.tracklist?.forEach((track: any, index: number) => {
-      const trackTitle = track.title.toLowerCase()
-        .replace(/\([^)]*\)/g, '')
-        .replace(/\[[^\]]*\]/g, '')
-        .replace(/[^\w\s-]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      console.log('Comparing track:', trackTitle, 'with:', cleanedTitle);
-
-      let trackScore = 0;
-      if (trackTitle === cleanedTitle) {
-        trackScore = 40; // Exact title match
-        matchedTrackNumber = index + 1;
-      } else if (trackTitle.includes(cleanedTitle) || cleanedTitle.includes(trackTitle)) {
-        trackScore = 20; // Partial title match
-        if (!matchedTrackNumber) matchedTrackNumber = index + 1;
-      }
-
-      if (trackScore > bestTrackScore) {
-        bestTrackScore = trackScore;
-      }
-    });
-
-    // Year validation (20 points max)
-    let yearScore = 0;
-    const year = parseInt(result.year, 10);
-    if (!isNaN(year) && year >= 1900 && year <= new Date().getFullYear()) {
-      yearScore = 20;
-    }
-
-    const totalScore = artistScore + bestTrackScore + yearScore;
-
-    console.log('Match score calculation:', {
-      album: result.title,
-      year: result.year,
-      artistScore,
-      bestTrackScore,
-      yearScore,
-      totalScore,
-      matchedTrackNumber
-    });
-
-    return { score: totalScore, trackNumber: matchedTrackNumber };
-  } catch (error) {
-    console.error('Error checking master release:', error);
-    return { score: 0 };
-  }
-}
-
-// Helper function to return Spotify data
-function fallbackToSpotify(song: { artist: string; title: string; currentReleaseDate: string; spotifyUrl: string }) {
-  return {
-    ...song,
-    releaseYear: song.currentReleaseDate.split('-')[0] || 'N/A',
-    releaseMonth: getMonthName(song.currentReleaseDate.split('-')[1]),
-    releaseDay: song.currentReleaseDate.split('-')[2] || 'N/A',
-    source: 'spotify',
-    sourceUrl: song.spotifyUrl
-  };
-}
-
-// Helper function to parse release date
-function parseReleaseDate(released: string) {
-  const releaseDate = {
-    year: 'N/A',
-    month: 'N/A',
-    day: 'N/A'
-  };
-
-  if (released) {
-    const parts = released.split('-');
-    if (parts[0]) releaseDate.year = parts[0];
-    if (parts[1]) {
-      const monthNum = parseInt(parts[1], 10);
-      if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
-        releaseDate.month = getMonthName(parts[1]);
-      }
-    }
-    if (parts[2]) {
-      const dayNum = parseInt(parts[2], 10);
-      if (!isNaN(dayNum)) {
-        releaseDate.day = dayNum.toString();
-      }
-    }
-  }
-
-  return releaseDate;
-}
-
-async function getDiscogsData(song: { artist: string; title: string; currentReleaseDate: string; spotifyUrl: string }) {
-  try {
-    const headers = {
-      'User-Agent': 'MusikQuiz/1.0.0',
-      'Authorization': `Discogs token=${config.discogs.apiKey}`
-    };
-
-    // Clean the title and artist for better matching
-    const cleanedTitle = song.title.toLowerCase()
-      .replace(/\([^)]*\)/g, '')
-      .replace(/\[[^\]]*\]/g, '')
-      .replace(/[^\w\s-]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    const cleanedArtist = song.artist.toLowerCase()
-      .replace(/\([^)]*\)/g, '')
-      .replace(/\[[^\]]*\]/g, '')
-      .replace(/[^\w\s-]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    console.log(`\nSearching Discogs for: ${cleanedArtist} - ${cleanedTitle}`);
-
-    // Search with both artist and title
-    const searchQuery = `${cleanedArtist} ${cleanedTitle}`;
-    const searchUrl = `${DISCOGS_API_URL}/database/search?q=${encodeURIComponent(searchQuery)}&type=master&per_page=20`;
-    
-    console.log('Making Discogs API request:', searchUrl);
-    const searchResponse = await fetch(searchUrl, { headers });
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
-
-    if (!searchResponse.ok) {
-      const error = await searchResponse.text();
-      console.error('Discogs API error:', {
-        status: searchResponse.status,
-        statusText: searchResponse.statusText,
-        error
-      });
-      throw new Error('Failed to search Discogs');
-    }
-
-    const searchData = await searchResponse.json();
-    console.log('Search results:', {
-      query: searchQuery,
-      resultsCount: searchData.results?.length || 0,
-      results: searchData.results?.map((r: any) => ({
-        title: r.title,
-        year: r.year,
-        id: r.id
-      }))
-    });
-
-    if (!searchData.results?.length) {
-      console.log('No Discogs results found, using Spotify data');
-      return fallbackToSpotify(song);
-    }
-
-    // Find the best matching release
-    let bestMatch = null;
-    let bestMatchScore = -1;
-    let bestMatchTrackNumber: number | undefined = undefined;
-    let bestMatchYear = Infinity;
-
-    for (const result of searchData.results) {
-      // Quick artist match check before making API calls
-      const resultTitle = result.title.toLowerCase();
-      const artistPart = resultTitle.split(' - ')[0]
-        .replace(/\(\d+\)/g, '')
-        .replace(/,\s*the$/i, '')
-        .trim();
-
-      if (artistPart !== cleanedArtist && !artistPart.includes(cleanedArtist) && !cleanedArtist.includes(artistPart)) {
-        continue;
-      }
-
-      // Skip live albums and compilations
-      if (resultTitle.includes('live') || resultTitle.includes('concert') || 
-          resultTitle.includes('compilation') || resultTitle.includes('greatest hits')) {
-        continue;
-      }
-
-      // Get the master release details to check the tracklist
-      const masterUrl = `${DISCOGS_API_URL}/masters/${result.id}`;
-      console.log('Fetching master details:', masterUrl);
-      const masterResponse = await fetch(masterUrl, { headers });
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
-
-      if (!masterResponse.ok) {
-        continue;
-      }
-
-      const masterData = await masterResponse.json();
-
-      // Skip if it's a live album or compilation
-      if (masterData.genres?.some((genre: string) => 
-        ['live', 'compilation', 'greatest hits'].includes(genre.toLowerCase())
-      )) {
-        continue;
-      }
-
-      // Look for our song in the tracklist
-      let bestTrackScore = 0;
-      let matchedTrackNumber: number | undefined = undefined;
-
-      masterData.tracklist?.forEach((track: any, index: number) => {
-        const trackTitle = track.title.toLowerCase()
-          .replace(/\([^)]*\)/g, '')
-          .replace(/\[[^\]]*\]/g, '')
-          .replace(/[^\w\s-]/g, '')
-          .replace(/\s+/g, ' ')
-          .trim();
-
-        let trackScore = 0;
-        if (trackTitle === cleanedTitle) {
-          trackScore = 40; // Exact title match
-          matchedTrackNumber = index + 1;
-        } else if (trackTitle.includes(cleanedTitle) || cleanedTitle.includes(trackTitle)) {
-          trackScore = 20; // Partial title match
-          if (!matchedTrackNumber) matchedTrackNumber = index + 1;
-        }
-
-        if (trackScore > bestTrackScore) {
-          bestTrackScore = trackScore;
-        }
-      });
-
-      // Year validation (20 points max)
-      let yearScore = 0;
-      const year = parseInt(result.year, 10);
-      if (!isNaN(year) && year >= 1900 && year <= new Date().getFullYear()) {
-        yearScore = 20;
-      }
-
-      // Calculate base score for artist and track matching
-      const baseScore = (artistPart === cleanedArtist ? 40 : 20) + bestTrackScore;
-
-      // Only consider format if years are the same
-      let formatScore = 0;
-      if (year === bestMatchYear) {
-        if (masterData.formats?.some((format: any) => 
-          format.descriptions?.some((desc: string) => 
-            ['album', 'studio', 'full length'].some(keyword => 
-              desc.toLowerCase().includes(keyword)
-            )
-          )
-        )) {
-          formatScore = 10;
-        }
-      }
-
-      // First compare by year, then by score
-      if (year < bestMatchYear || (year === bestMatchYear && baseScore + formatScore > bestMatchScore)) {
-        bestMatchScore = baseScore + formatScore;
-        bestMatch = result;
-        bestMatchTrackNumber = matchedTrackNumber;
-        bestMatchYear = year;
-      }
-
-      // Stop if we find a perfect match (100 points) or very good match (90+ points)
-      if (baseScore + formatScore >= 90) {
-        break;
-      }
-    }
-
-    if (!bestMatch || bestMatchScore < 60) {
-      console.log('No good match found, using Spotify data');
-      return fallbackToSpotify(song);
-    }
-
-    console.log('Best match found:', {
-      title: bestMatch.title,
-      year: bestMatch.year,
-      score: bestMatchScore,
-      trackNumber: bestMatchTrackNumber
-    });
-
-    // Get the master release details to get the main release ID
-    const masterUrl = `${DISCOGS_API_URL}/masters/${bestMatch.id}`;
-    console.log('Fetching master details for main release:', masterUrl);
-    const masterResponse = await fetch(masterUrl, { headers });
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
-
-    if (!masterResponse.ok) {
-      console.log('Failed to fetch master details for main release, using Spotify data');
-      return fallbackToSpotify(song);
-    }
-
-    const masterData = await masterResponse.json();
-    const mainReleaseId = masterData.main_release;
-
-    if (!mainReleaseId) {
-      console.log('No main release ID found, using Spotify data');
-      return fallbackToSpotify(song);
-    }
-
-    // Get the main release details
-    const mainReleaseUrl = `${DISCOGS_API_URL}/releases/${mainReleaseId}`;
-    console.log('Fetching main release details:', mainReleaseUrl);
-    const mainReleaseResponse = await fetch(mainReleaseUrl, { headers });
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
-
-    if (!mainReleaseResponse.ok) {
-      console.log('Failed to fetch main release details, using Spotify data');
-      return fallbackToSpotify(song);
-    }
-
-    const mainReleaseData = await mainReleaseResponse.json();
-    console.log('Main release details:', {
-      title: mainReleaseData.title,
-      released: mainReleaseData.released,
-      formats: mainReleaseData.formats
-    });
-
-    // Skip promos, samplers, and re-releases
-    const format = mainReleaseData.formats?.[0];
-    if (format?.descriptions?.some((desc: string) => 
-      ['promo', 'sampler', 'test pressing', 'advance', 'acetate', 'reissue', 'remaster'].some(keyword => 
-        desc.toLowerCase().includes(keyword)
-      )
-    )) {
-      console.log('Skipping promo/sampler/reissue release, using Spotify data');
-      return fallbackToSpotify(song);
-    }
-
-    const releaseDate = parseReleaseDate(mainReleaseData.released);
-
-    // Only validate that the year is within a reasonable range
-    const year = parseInt(releaseDate.year, 10);
-    if (isNaN(year) || year < 1900 || year > new Date().getFullYear()) {
-      console.log('Invalid release year, using Spotify data');
-      return fallbackToSpotify(song);
-    }
-
-    const result = {
-      ...song,
-      releaseYear: releaseDate.year,
-      releaseMonth: releaseDate.month,
-      releaseDay: releaseDate.day,
-      source: 'discogs',
-      sourceUrl: `https://www.discogs.com/master/${bestMatch.id}${bestMatchTrackNumber ? '#' + bestMatchTrackNumber : ''}`
-    };
-
-    console.log('Final result:', result);
-    return result;
-
-  } catch (error) {
-    console.error(`Error processing song ${song.title}:`, error);
-    return fallbackToSpotify(song);
-  }
-}
-
 function getMonthName(monthNum: string | undefined): string {
   if (!monthNum) return 'N/A';
   const num = parseInt(monthNum, 10);
@@ -458,14 +74,23 @@ function getMonthName(monthNum: string | undefined): string {
   return MONTHS[num - 1];
 }
 
+// Fisher-Yates (aka Knuth) Shuffle algorithm
+function shuffleArray(array: any[]) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]]; // Swap elements
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const url = searchParams.get('url');
-    const startIndex = parseInt(searchParams.get('startIndex') || '0');
-    const limit = parseInt(searchParams.get('limit') || '5');
+    // startIndex is no longer needed for sampling logic, remove?
+    // const startIndex = parseInt(searchParams.get('startIndex') || '0'); 
+    const maxQuizSize = 200; // Max songs for the quiz
 
-    console.log('Spotify playlist request:', { url, startIndex, limit });
+    console.log('Spotify playlist request:', { url });
 
     if (!url) {
       console.error('No URL provided');
@@ -479,69 +104,137 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid playlist URL' }, { status: 400 });
     }
 
-    console.log('Fetching playlist with ID:', playlistId);
+    console.log('Fetching playlist metadata for ID:', playlistId);
 
-    // Get playlist tracks from Spotify
-    const playlistResponse = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50&offset=${startIndex}`, {
+    // --- Step 1: Fetch playlist metadata (total tracks) ---
+    const metaResponse = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}?fields=tracks.total`, {
       headers: {
         'Authorization': `Bearer ${await getAccessToken()}`,
       },
     });
-
-    if (!playlistResponse.ok) {
-      const error = await playlistResponse.json();
-      console.error('Spotify API error:', error);
-      return NextResponse.json({ error: error.error?.message || 'Failed to fetch playlist' }, { status: playlistResponse.status });
+    if (!metaResponse.ok) {
+        const error = await metaResponse.json();
+        console.error('Spotify API error fetching metadata:', error);
+        return NextResponse.json({ error: error.error?.message || 'Failed to fetch playlist metadata' }, { status: metaResponse.status });
     }
-
-    const playlistData = await playlistResponse.json();
-    console.log('Received playlist data:', {
-      totalTracks: playlistData.total,
-      receivedTracks: playlistData.items.length
-    });
-
-    const tracks = playlistData.items.map((item: any) => item.track);
-
-    if (!tracks.length) {
-      console.log('No tracks found in playlist');
-      return NextResponse.json({ songs: [], total: 0, hasMore: false });
+    const metaData = await metaResponse.json();
+    const totalTracks = metaData.tracks?.total || 0;
+    if (totalTracks === 0) {
+        console.log('Playlist is empty.');
+        return NextResponse.json({ songs: [], total: 0, hasMore: false }); // Should match expected frontend structure
     }
+    console.log('Playlist total tracks:', totalTracks);
 
-    // Process songs in batches of 3
-    const batchSize = 3;
-    const processedSongs = [];
-    
-    for (let i = 0; i < tracks.length; i += batchSize) {
-      const batch = tracks.slice(i, i + batchSize);
-      console.log(`\nProcessing batch ${Math.floor(i/batchSize) + 1} of ${Math.ceil(tracks.length/batchSize)}`);
-      console.log('Batch songs:', batch.map((s: SpotifyTrack) => s.name).join(', '));
+    // --- Step 2: Determine sample size and fetch tracks ---
+    const numSongsToSample = Math.min(totalTracks, maxQuizSize);
+    const spotifyApiLimit = 50; // Spotify API limit per request
+    let fetchedTracks: SpotifyTrack[] = [];
+    let offset = 0;
 
-      // Process batch in parallel
-      const batchResults = await Promise.all(
-        batch.map((track: SpotifyTrack) => getDiscogsData({
+    console.log(`Fetching ${numSongsToSample} tracks for sampling...`);
+    while (fetchedTracks.length < numSongsToSample) {
+        const limit = Math.min(spotifyApiLimit, numSongsToSample - fetchedTracks.length);
+        console.log(`Fetching batch: offset=${offset}, limit=${limit}`);
+        const batchResponse = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=${limit}&offset=${offset}&fields=items(track(name,artists(name),album(name,release_date),external_urls(spotify)))`, {
+            headers: {
+                'Authorization': `Bearer ${await getAccessToken()}`,
+            },
+        });
+
+        if (!batchResponse.ok) {
+            const error = await batchResponse.json();
+            console.error('Spotify API error fetching tracks batch:', error);
+            // Decide if we should fail or proceed with fetched tracks so far
+            if (fetchedTracks.length > 0) {
+                console.warn('Proceeding with partially fetched tracks.');
+                break; // Exit loop if a batch fails but we have some tracks
+            } else {
+                return NextResponse.json({ error: error.error?.message || 'Failed to fetch playlist tracks' }, { status: batchResponse.status });
+            }
+        }
+
+        const batchData = await batchResponse.json();
+        const tracksInBatch = batchData.items?.map((item: any) => item.track).filter(Boolean) || [];
+        fetchedTracks.push(...tracksInBatch);
+        offset += limit;
+        if (batchData.items?.length < limit) break; // Stop if Spotify returned fewer items than requested
+    }
+    console.log(`Fetched ${fetchedTracks.length} tracks total.`);
+
+    // --- Step 3: Shuffle and Sample ---
+    shuffleArray(fetchedTracks);
+    const sampledSongs = fetchedTracks.slice(0, numSongsToSample); // Take the top N after shuffle
+    console.log(`Sampled ${sampledSongs.length} tracks randomly.`);
+
+    // --- Step 4: Map to Basic Structure ---
+    const potentialQuizSongs = sampledSongs
+      .map((track: SpotifyTrack | null) => { // fetchedTracks might contain nulls if API returns partial data
+        if (!track) return null;
+        if (!track.name || !track.artists || !track.artists[0]?.name || !track.album?.release_date || !track.external_urls?.spotify) {
+            console.warn('Skipping sampled track due to missing data:', track);
+            return null;
+        }
+        return {
           artist: track.artists[0].name,
           title: track.name,
-          currentReleaseDate: track.album.release_date,
+          currentReleaseDate: track.album.release_date, // Send Spotify's date as baseline
           spotifyUrl: track.external_urls.spotify
-        }))
-      );
+        };
+      })
+      .filter((song): song is { artist: string; title: string; currentReleaseDate: string; spotifyUrl: string } => song !== null); // Filter out nulls and type guard
 
-      processedSongs.push(...batchResults);
-
-      // Add a small delay between batches to respect rate limits
-      if (i + batchSize < tracks.length) {
-        console.log('Waiting 2 seconds before next batch...');
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
+    if (!potentialQuizSongs.length) {
+      console.log('No processable tracks found after filtering sampled songs.');
+      return NextResponse.json({ songs: [], total: totalTracks, hasMore: false }); // Indicate no usable songs
     }
 
-    return NextResponse.json({
-      songs: processedSongs,
-      total: playlistData.total,
-      hasMore: startIndex + tracks.length < playlistData.total
+    // --- Step 5: Select Random First Song ---
+    const randomIndex = Math.floor(Math.random() * potentialQuizSongs.length);
+    const firstSongToProcess = potentialQuizSongs[randomIndex];
+    const remainingSongsToProcess = potentialQuizSongs.filter((_, index) => index !== randomIndex);
+    console.log(`Selected random first song: "${firstSongToProcess.title}"`);
+
+    // --- Step 6: Delegate to /api/process-songs ---
+    console.log(`Sending 1 first song + ${remainingSongsToProcess.length} remaining songs to /api/process-songs...`);
+    const processSongsUrl = `${request.nextUrl.origin}/api/process-songs`;
+    console.log('Calling process URL:', processSongsUrl);
+
+    const processResponse = await fetch(processSongsUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+            firstSong: firstSongToProcess, 
+            remainingSongs: remainingSongsToProcess 
+        }), // Send structured payload
     });
+
+    if (!processResponse.ok) {
+        const errorText = await processResponse.text();
+        console.error(`Error calling /api/process-songs: ${processResponse.status} ${processResponse.statusText}`, errorText);
+        throw new Error('Failed to process songs via API route');
+    }
+
+    // The response from /api/process-songs should now be { processedSong: ..., jobId: ... }
+    const processResult = await processResponse.json(); 
+    console.log(`Received response from /api/process-songs:`, processResult);
+
+    // --- Step 7: Return Response to Frontend ---
+    // Return structure needs to align with frontend expectations (might need adjustment)
+    // Assuming frontend now expects { firstSong: ..., jobId: ..., total: ... }
+    return NextResponse.json({
+      firstSong: processResult.processedSong, // Pass the processed first song
+      jobId: processResult.jobId, // Pass the job ID for background polling/SSE
+      totalProcessed: 1, // Initially, only 1 song is processed
+      totalAvailableInQuiz: potentialQuizSongs.length, // How many songs will be in the quiz eventually
+      totalInPlaylist: totalTracks // Original playlist size
+      // hasMore is no longer relevant in this model, maybe remove or adapt
+    });
+
   } catch (error) {
     console.error('Error processing playlist:', error);
-    return NextResponse.json({ error: 'Failed to process playlist' }, { status: 500 });
+    const errorMessage = error instanceof Error ? error.message : 'Failed to process playlist';
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 } 

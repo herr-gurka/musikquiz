@@ -3,38 +3,10 @@
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { searchSpotifyTrack } from '../utils/spotify';
+import { ProcessedSong } from '../api/process-songs/route';
 
-interface Song {
-  artist: string;
-  title: string;
-  releaseYear: string;
-  releaseMonth: string;
-  releaseDay: string;
-  currentReleaseDate: string;
-  spotifyUrl: string | undefined;
+interface Song extends ProcessedSong {
   completed?: boolean;
-  source?: string;
-  sourceUrl?: string;
-}
-
-interface PlaylistResponse {
-  songs: Song[];
-  total: number;
-  hasMore: boolean;
-  remainingTracks?: SpotifyTrack[];
-}
-
-interface SpotifyTrack {
-  name: string;
-  artists: { name: string }[];
-  album: {
-    name: string;
-    release_date: string;
-  };
-  external_urls: {
-    spotify: string;
-  };
 }
 
 export default function QuizPage() {
@@ -58,83 +30,111 @@ function QuizContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [songs, setSongs] = useState<Song[]>([]);
+  const [jobId, setJobId] = useState<string | null>(null);
   const [currentSongIndex, setCurrentSongIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [hasBeenFlipped, setHasBeenFlipped] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [totalSongs, setTotalSongs] = useState(0);
+  const [totalSongsInQuiz, setTotalSongsInQuiz] = useState(0);
+  const [totalSongsInPlaylist, setTotalSongsInPlaylist] = useState(0);
   const [completedSongs, setCompletedSongs] = useState<Song[]>([]);
   const fetchStartedRef = useRef(false);
   const songList = searchParams.get('songList');
-  const [hasMore, setHasMore] = useState(false);
+  const [sseStatus, setSseStatus] = useState<'idle' | 'streaming' | 'complete' | 'failed'>('idle');
 
-  const loadMoreSongs = async (startIndex: number, limit: number) => {
-    try {
-      console.log('Loading songs:', { startIndex, limit });
-      const response = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(songList || '')}&startIndex=${startIndex}&limit=${limit}`);
-      
-      if (!response.ok) {
-        const error = await response.json();
-        console.error('Failed to load songs:', error);
-        setError(error.error || 'Failed to load songs');
-        return;
-      }
-
-      const data = await response.json();
-      console.log('Received songs data:', {
-        songsCount: data.songs?.length || 0,
-        total: data.total,
-        hasMore: data.hasMore
-      });
-
-      if (!data.songs) {
-        console.error('No songs in response:', data);
-        setError('No songs found in playlist');
-        return;
-      }
-
-      setSongs(prevSongs => {
-        const newSongs = [...prevSongs];
-        data.songs.forEach((song: any) => {
-          const existingIndex = newSongs.findIndex(s => s.title === song.title);
-          if (existingIndex === -1) {
-            newSongs.push(song);
-          }
-        });
-        return newSongs;
-      });
-
-      setHasMore(data.hasMore);
-      setTotalSongs(data.total);
-      setLoading(false); // Set loading to false after we have songs
-    } catch (error) {
-      console.error('Error loading songs:', error);
-      setError('Failed to load songs');
-      setLoading(false);
-    }
-  };
-
-  // Load songs when component mounts
   useEffect(() => {
     if (!songList || fetchStartedRef.current) return;
 
     fetchStartedRef.current = true;
     setLoading(true);
-    loadMoreSongs(0, 5);
-  }, [songList]); // Only depend on songList
+    setError(null);
+    setSseStatus('idle');
 
-  // Load more songs when scrolling
-  const loadMore = async () => {
-    if (isLoadingMore || !hasMore) return;
-    setIsLoadingMore(true);
-    try {
-      await loadMoreSongs(songs.length, 5);
-    } finally {
-      setIsLoadingMore(false);
+    const fetchInitialSong = async () => {
+      try {
+        console.log('Fetching initial song and job ID...');
+        const response = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(songList || '')}`);
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error('Failed to fetch initial song:', errorData);
+          throw new Error(errorData.error || 'Failed to fetch initial song data');
+        }
+
+        const data = await response.json();
+        console.log('Received initial data:', data);
+
+        if (!data.firstSong || !data.jobId) {
+          console.error('Invalid initial response structure:', data);
+          throw new Error('Received invalid data from server.');
+        }
+
+        setSongs([data.firstSong]);
+        setJobId(data.jobId);
+        setTotalSongsInQuiz(data.totalAvailableInQuiz || 1);
+        setTotalSongsInPlaylist(data.totalInPlaylist || 1);
+        setLoading(false);
+
+      } catch (err) {
+        console.error('Error during initial fetch:', err);
+        setError(err instanceof Error ? err.message : 'An unknown error occurred');
+        setLoading(false);
+      }
+    };
+
+    fetchInitialSong();
+
+  }, [songList]);
+
+  useEffect(() => {
+    if (!jobId) {
+        setSseStatus('idle');
+        return; // Don't connect if we don't have a jobId
     }
-  };
+
+    console.log(`[SSE] Connecting with jobId: ${jobId}`);
+    setSseStatus('streaming');
+    const eventSource = new EventSource(`/api/song-stream?jobId=${jobId}`);
+
+    eventSource.addEventListener('song', (event) => {
+        try {
+            const newSong = JSON.parse(event.data) as Song; // Assuming Song is ProcessedSong + completed?
+            console.log('[SSE] Received song:', newSong.title, newSong.releaseYear);
+            setSongs(prevSongs => {
+                 // Avoid adding duplicates if SSE somehow sends the same song twice
+                if (prevSongs.some(s => s.title === newSong.title && s.artist === newSong.artist)) {
+                    return prevSongs;
+                }
+                return [...prevSongs, newSong];
+            });
+        } catch (e) {
+            console.error('[SSE] Error parsing song data:', e);
+        }
+    });
+
+    eventSource.addEventListener('done', (event) => {
+        const finalStatus = event.data; 
+        console.log(`[SSE] Job finished with status: ${finalStatus}`);
+        setSseStatus(finalStatus === 'complete' ? 'complete' : 'failed');
+        eventSource.close();
+    });
+
+    eventSource.addEventListener('error', (event) => {
+        console.error('[SSE] Connection error:', event);
+        setError('Connection lost while loading songs. Please try again.');
+        setSseStatus('failed');
+        eventSource.close();
+    });
+
+    // Cleanup function: Close the connection when the component unmounts or jobId changes
+    return () => {
+        console.log('[SSE] Cleaning up connection.');
+        eventSource.close();
+        setSseStatus('idle');
+    };
+
+  }, [jobId]); // Re-run effect if jobId changes
 
   const handleFlip = () => {
     setIsFlipped(!isFlipped);
@@ -143,18 +143,14 @@ function QuizContent() {
 
   const handleNextSong = () => {
     if (currentSongIndex < songs.length - 1) {
-      // Mark current song as completed if it has been flipped at any point
-      if (hasBeenFlipped) {
-        setCompletedSongs(prev => [...prev, songs[currentSongIndex]]);
-      }
+      setCompletedSongs(prev => [...prev, songs[currentSongIndex]]);
       setCurrentSongIndex(prev => prev + 1);
       setIsFlipped(false);
       setHasBeenFlipped(false);
-      
-      // If we're getting close to the end of our loaded songs, load more
-      if (currentSongIndex >= songs.length - 3 && songs.length < totalSongs) {
-        loadMoreSongs(currentSongIndex + 1, 50);
-      }
+    } else if (sseStatus === 'complete' && currentSongIndex === songs.length - 1) {
+      console.log("Quiz finished!");
+    } else if (sseStatus === 'streaming' && currentSongIndex === songs.length - 1) {
+      console.log("Waiting for more songs...");
     }
   };
 
@@ -177,9 +173,6 @@ function QuizContent() {
               </svg>
             </div>
             <h2 className="text-2xl font-bold text-gray-900">Loading quiz...</h2>
-            {isLoadingMore && (
-              <p className="text-gray-600">Loading more songs...</p>
-            )}
           </div>
         </div>
       </div>
@@ -231,10 +224,10 @@ function QuizContent() {
   }
 
   const currentSong = songs[currentSongIndex];
+  const isWaitingForSse = sseStatus === 'streaming' && currentSongIndex === songs.length - 1;
 
   return (
     <div className="min-h-screen flex flex-col bg-gradient-to-br from-purple-600 via-blue-500 to-purple-600 p-4">
-      {/* Top section with back button */}
       <div className="w-full max-w-md mx-auto">
         <button
           onClick={() => router.push('/')}
@@ -244,7 +237,6 @@ function QuizContent() {
         </button>
       </div>
 
-      {/* Main card section */}
       <div className="w-full max-w-md mx-auto mb-4">
         <div className="perspective-1000 w-full">
           <div
@@ -253,7 +245,6 @@ function QuizContent() {
             }`}
             style={{ transformStyle: 'preserve-3d' }}
           >
-            {/* Back of card */}
             <div
               className={`absolute inset-0 w-full h-full bg-white rounded-2xl shadow-2xl p-4 backface-hidden rotate-y-180 ${
                 !isFlipped ? 'invisible' : ''
@@ -261,7 +252,6 @@ function QuizContent() {
             >
               <div className="h-full flex flex-col items-center justify-between">
                 <div className="flex-1 flex flex-col items-center justify-center w-full">
-                  {/* Release information section */}
                   <div className="text-center mb-2">
                     <div className="text-4xl font-bold bg-gradient-to-r from-purple-600 to-blue-500 bg-clip-text text-transparent">
                       {currentSong?.releaseYear}
@@ -272,13 +262,11 @@ function QuizContent() {
                     </div>
                   </div>
 
-                  {/* Artist and title section */}
                   <div className="border-t border-gray-200 w-full max-w-[85%] pt-3 text-center">
                     <p className="text-xl font-semibold text-gray-800 break-words">{currentSong?.artist}</p>
                     <h3 className="text-lg text-gray-600 mt-1 break-words">{currentSong?.title}</h3>
                   </div>
 
-                  {/* Source information */}
                   <div className="text-sm text-gray-500 mt-3">
                     Data from{' '}
                     {currentSong?.source && (
@@ -307,7 +295,6 @@ function QuizContent() {
               </div>
             </div>
 
-            {/* Front of card */}
             <div
               className={`absolute inset-0 w-full h-full bg-white rounded-2xl shadow-2xl p-4 backface-hidden ${
                 isFlipped ? 'invisible' : ''
@@ -375,7 +362,6 @@ function QuizContent() {
         </div>
       </div>
 
-      {/* Completed cards section */}
       <div className="w-full max-w-4xl mx-auto mt-4">
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
           {completedSongs
@@ -389,6 +375,8 @@ function QuizContent() {
             ))}
         </div>
       </div>
+
+      {isWaitingForSse && <p>Loading next song...</p>}
     </div>
   );
 } 

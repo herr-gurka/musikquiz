@@ -36,4 +36,7 @@ Thumbs.db
 app/config/config.local.ts
 
 # Local documentation
-docs/SETUP.md 
+docs/SETUP.md
+
+# Local Environment Variables
+.env*.local 
