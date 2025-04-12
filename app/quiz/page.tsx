@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { ProcessedSong } from '../api/process-songs/route';
+import { ProcessedSong } from '@/app/utils/processing';
 
 interface Song extends ProcessedSong {
   completed?: boolean;

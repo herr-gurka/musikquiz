@@ -59,9 +59,17 @@ export async function POST(request: NextRequest) {
     if (remainingSongs.length > 0) {
       try {
         const qstashClient = new Client({ token: process.env.QSTASH_TOKEN! });
-        const baseUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000';
+        
+        // Prioritize NGROK_URL for local QStash testing
+        // Use VERCEL_URL for production/preview
+        // Fallback to localhost for standard local dev
+        const ngrokUrl = process.env.NGROK_URL; 
+        const vercelUrl = process.env.VERCEL_URL;
+        const baseUrl = ngrokUrl ? ngrokUrl : (vercelUrl ? `https://${vercelUrl}` : 'http://localhost:3000');
+
         const workerUrl = `${baseUrl}/api/process-job-worker`;
         console.log(`[Job ${jobId}] Publishing job to QStash worker: ${workerUrl}`);
+        
         await qstashClient.publishJSON({
           url: workerUrl,
           body: {
