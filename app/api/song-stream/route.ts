@@ -81,13 +81,16 @@ export async function GET(request: NextRequest) {
           status = typeof statusResult === 'string' ? statusResult : null;
           console.log(`[SSE ${jobId}] Fetched status: ${status}`);
 
-          // 4. Check if job is finished
-          const isJobFinished = (status === 'complete' || status === 'failed' || status === 'init_failed' || status === null);
+          // 4. Check if job is finished (using the correctly typed status variable)
+          // Only consider explicit terminal states as 'finished' for closing logic initially
+          const isJobFinished = (status === 'complete' || status === 'failed' || status === 'init_failed');
+          // Note: status === null now means the job hasn't started writing status yet, so keep polling.
           console.log(`[SSE ${jobId}] isJobFinished=${isJobFinished}, status=${status}, resultsSentNow=${resultsSentNow}, lastSentIndex=${lastSentIndex}, currentResultsLength=${currentResultsLength}`);
 
           // 5. Close ONLY if job is finished AND all results stored have been sent
           if (isJobFinished && lastSentIndex === currentResultsLength) {
-             const finalStatus = status || 'unknown';
+             // Use the actual status found for the 'done' event, or 'unknown' if somehow null slips through?
+             const finalStatus = status || 'finished_unexpected_null'; 
              console.log(`[SSE ${jobId}] Condition met: Job finished (${finalStatus}) and all ${currentResultsLength} results sent. Closing connection.`);
              sendEvent('done', finalStatus);
              if (intervalId) clearInterval(intervalId);
@@ -95,8 +98,10 @@ export async function GET(request: NextRequest) {
              return; // Stop the interval checks
           } else if (isJobFinished && lastSentIndex < currentResultsLength) {
               console.log(`[SSE ${jobId}] Condition NOT met: Job finished (${status}) BUT more results to send (${lastSentIndex}/${currentResultsLength}). Continuing poll.`);
+          } else if (status === null) {
+              console.log(`[SSE ${jobId}] Condition NOT met: Job status is null (likely not started/initialized yet). Continuing poll.`);
           } else {
-              console.log(`[SSE ${jobId}] Condition NOT met: Job not finished. Continuing poll.`);
+              console.log(`[SSE ${jobId}] Condition NOT met: Job status is ${status}. Continuing poll.`);
           }
 
         } catch (error) {
