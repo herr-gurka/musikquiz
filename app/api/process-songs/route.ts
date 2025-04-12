@@ -2,8 +2,14 @@ import { NextResponse, NextRequest } from 'next/server';
 import { config } from '@/app/config/config';
 import { Redis } from "@upstash/redis"; // Import Upstash Redis client
 import { v4 as uuidv4 } from 'uuid'; // Import uuid for job IDs
+import { Ratelimit } from "@upstash/ratelimit";
+import { readFile, writeFile } from 'fs/promises';
+import path from 'path';
+import { cleanArtist, cleanTitle } from '@/app/utils/discogs';
+import { searchSpotifyTrack } from '@/app/utils/spotify';
 
 const DISCOGS_API_URL = 'https://api.discogs.com';
+const JOB_EXPIRATION = 3600; // 1 hour in seconds
 
 // Redefine ProcessedSong without extends
 export interface ProcessedSong {
@@ -29,7 +35,7 @@ export interface Song {
 }
 
 // Initialize Redis client using environment variables
-const redis = new Redis({
+const redisClient = new Redis({
   url: process.env.KV_REST_API_URL || '', // Use Vercel's standard env var names
   token: process.env.KV_REST_API_TOKEN || '',
 });
@@ -337,62 +343,53 @@ async function getReleaseData(song: Song): Promise<ProcessedSong> {
   }
 }
 
-// --- Background Processing Function --- 
-async function processRemainingSongsInBackground(
-    remainingSongs: Song[], 
-    jobId: string, 
-    initialReleaseYear: string
-) {
-    console.log(`[Job ${jobId}] Starting background processing for ${remainingSongs.length} songs.`);
-    const resultsKey = `${jobId}:results`;
-    const yearsKey = `${jobId}:years`; 
-    const statusKey = `${jobId}:status`;
+// Define the background function
+async function processSongsInBackground(jobId: string, songsToProcess: Song[]) {
+  console.log(`[Job ${jobId}] Entering processSongsInBackground for ${songsToProcess.length} songs.`);
+  const statusKey = `job:${jobId}:status`;
+  const resultsKey = `job:${jobId}:results`;
+  const totalSongs = songsToProcess.length;
 
-    try {
-        // Initialize Redis store for this job
-        await redis.set(yearsKey, JSON.stringify([initialReleaseYear]), { ex: 3600 }); 
-        await redis.set(statusKey, 'processing', { ex: 3600 });
-        await redis.del(resultsKey);
+  try {
+    console.log(`[Job ${jobId}] Attempting to set status to 'processing'.`);
+    await redisClient.set(statusKey, 'processing', { ex: JOB_EXPIRATION });
+    console.log(`[Job ${jobId}] Successfully set status to 'processing'.`);
 
-        const processedYears = new Set<string>([initialReleaseYear]);
-        let count = 0;
-
-        for (const song of remainingSongs) {
-            count++;
-            console.log(`[Job ${jobId}] Processing song ${count}/${remainingSongs.length}: ${song.title}`);
-            try {
-                const processedSong = await getReleaseData(song);
-                
-                if (processedSong && processedSong.releaseYear && processedSong.releaseYear !== 'N/A') {
-                    if (!processedYears.has(processedSong.releaseYear)) {
-                        processedYears.add(processedSong.releaseYear);
-                        // Revert: Push the STRINGIFIED object to list in Redis
-                        await redis.lpush(resultsKey, JSON.stringify(processedSong));
-                        // Update the set of years in Redis (still needs stringify for the Set)
-                        await redis.set(yearsKey, JSON.stringify(Array.from(processedYears)), { ex: 3600 });
-                        console.log(`[Job ${jobId}] Added song ${song.title} (${processedSong.releaseYear})`);
-                    } else {
-                        console.log(`[Job ${jobId}] Skipping song ${song.title} - year ${processedSong.releaseYear} already processed.`);
-                    }
-                } else {
-                    console.log(`[Job ${jobId}] Skipping song ${song.title} - failed processing or invalid year.`);
-                }
-            } catch (songError) {
-                console.error(`[Job ${jobId}] Error processing individual song ${song.title}:`, songError);
-                // Continue to next song
-            }
-            // Optional: Add small delay between processing each song in background?
-            // await new Promise(resolve => setTimeout(resolve, 100)); 
-        }
-
-        // Mark job as complete
-        await redis.set(statusKey, 'complete', { ex: 3600 });
-        console.log(`[Job ${jobId}] Background processing complete.`);
-
-    } catch (error) {
-        console.error(`[Job ${jobId}] Error during background processing:`, error);
-        await redis.set(statusKey, 'failed', { ex: 3600 });
+    for (let i = 0; i < songsToProcess.length; i++) {
+      const song = songsToProcess[i];
+      console.log(`[Job ${jobId}] Processing song ${i + 1}/${totalSongs}: "${song.title}"`);
+      try {
+        const processedSong = await getReleaseData(song); // Process the song
+        // Store the result in Redis list
+        await redisClient.rpush(resultsKey, JSON.stringify(processedSong)); 
+        console.log(`[Job ${jobId}] Stored result for "${song.title}"`);
+        // Optional: Add a small delay to prevent rate limiting issues if getReleaseData calls external APIs frequently
+        await new Promise(resolve => setTimeout(resolve, 1000)); 
+      } catch (songError) {
+        console.error(`[Job ${jobId}] Error processing song "${song.title}":`, songError);
+        // Optionally store an error marker for this song, or just skip
+        const errorMessage = songError instanceof Error ? songError.message : 'Unknown error';
+        const errorResult = { ...fallbackToSpotify(song), error: `Failed to process: ${errorMessage}` };
+        await redisClient.rpush(resultsKey, JSON.stringify(errorResult));
+      }
     }
+
+    console.log(`[Job ${jobId}] Finished processing loop.`);
+
+    console.log(`[Job ${jobId}] Attempting to set status to 'complete'.`);
+    await redisClient.set(statusKey, 'complete', { ex: JOB_EXPIRATION });
+    console.log(`[Job ${jobId}] Background processing complete. Status set to 'complete'.`);
+
+  } catch (error) {
+    console.error(`[Job ${jobId}] Error during background processing:`, error);
+    try {
+      console.log(`[Job ${jobId}] Attempting to set status to 'failed' due to error.`);
+      await redisClient.set(statusKey, 'failed', { ex: JOB_EXPIRATION });
+      console.log(`[Job ${jobId}] Successfully set status to 'failed'.`);
+    } catch (redisError) {
+      console.error(`[Job ${jobId}] Failed to set status to 'failed' in Redis:`, redisError);
+    }
+  }
 }
 
 // --- API Endpoint --- 
@@ -431,9 +428,11 @@ export async function POST(request: NextRequest) {
     const initialReleaseYear = processedFirstSong.releaseYear; // Get year from the processed first song
 
     // Trigger background task - DO NOT AWAIT
-    processRemainingSongsInBackground(remainingSongs, jobId, initialReleaseYear).catch(err => {
-        console.error(`[Job ${jobId}] Background task initiation failed:`, err);
-        redis.set(`${jobId}:status`, 'init_failed', { ex: 3600 }).catch(); // Attempt to mark status using redis
+    processSongsInBackground(jobId, remainingSongs).catch((error) => {
+      console.error(`[Job ${jobId}] Unhandled error in background task initiation:`, error);
+      // Attempt to mark the job as failed if the background task fails immediately
+      redisClient.set(`job:${jobId}:status`, 'init_failed', { ex: JOB_EXPIRATION })
+        .catch(redisError => console.error(`[Job ${jobId}] Failed to set init_failed status:`, redisError));
     });
     console.log(`[Job ${jobId}] Initiated background task for ${remainingSongs.length} songs.`);
 

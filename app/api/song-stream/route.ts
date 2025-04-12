@@ -27,8 +27,8 @@ export async function GET(request: NextRequest) {
     async start(controller) {
       let intervalId: NodeJS.Timeout | null = null;
       let lastSentIndex = 0; // Track index of the last result sent
-      const resultsKey = `${jobId}:results`;
-      const statusKey = `${jobId}:status`;
+      const resultsKey = `job:${jobId}:results`;
+      const statusKey = `job:${jobId}:status`;
 
       // Function to send SSE messages
       const sendEvent = (event: string, data: string) => {
@@ -55,8 +55,7 @@ export async function GET(request: NextRequest) {
           // 1. Fetch results
           const results = await redis.lrange<ProcessedSong>(resultsKey, 0, -1); 
           const currentResults: ProcessedSong[] = results
-              .filter((song): song is ProcessedSong => song !== null && typeof song === 'object' && song.title !== undefined)
-              .reverse(); 
+              .filter((song): song is ProcessedSong => song !== null && typeof song === 'object' && song.title !== undefined);
           currentResultsLength = currentResults.length; // Use length of *parsed* results
               
           console.log(`[SSE ${jobId}] Parsed ${currentResultsLength} results from Redis.`);
