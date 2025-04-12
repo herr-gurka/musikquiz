@@ -1,38 +1,15 @@
 import { NextResponse, NextRequest } from 'next/server';
-import { config } from '@/app/config/config';
 import { Redis } from "@upstash/redis"; // Import Upstash Redis client
 import { v4 as uuidv4 } from 'uuid'; // Import uuid for job IDs
-import { Ratelimit } from "@upstash/ratelimit";
-import { readFile, writeFile } from 'fs/promises';
-import path from 'path';
-import { cleanArtist, cleanTitle } from '@/app/utils/discogs';
-import { searchSpotifyTrack } from '@/app/utils/spotify';
+import { Client } from "@upstash/qstash"; // Add QStash Client import
+import { 
+  Song, 
+  ProcessedSong, 
+  fallbackToSpotify, 
+  getReleaseData 
+} from '@/app/utils/processing';
 
-const DISCOGS_API_URL = 'https://api.discogs.com';
 const JOB_EXPIRATION = 3600; // 1 hour in seconds
-
-// Redefine ProcessedSong without extends
-export interface ProcessedSong {
-  // Fields from original Song interface
-  artist: string;
-  title: string;
-  currentReleaseDate: string; // From Spotify initially
-  spotifyUrl: string;
-  // Added fields
-  releaseYear: string;
-  releaseMonth: string;
-  releaseDay: string;
-  source: 'deezer' | 'discogs' | 'spotify'; 
-  sourceUrl?: string;
-}
-
-// Keep original Song interface
-export interface Song {
-  artist: string;
-  title: string;
-  currentReleaseDate: string; // From Spotify initially
-  spotifyUrl: string;
-}
 
 // Initialize Redis client using environment variables
 const redisClient = new Redis({
@@ -40,406 +17,73 @@ const redisClient = new Redis({
   token: process.env.KV_REST_API_TOKEN || '',
 });
 
-function getMonthName(monthNum: string | undefined): string {
-  if (!monthNum) return 'N/A';
-  const num = parseInt(monthNum, 10);
-  if (isNaN(num) || num < 1 || num > 12) return 'N/A';
-  return ['January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'][num - 1];
-}
-
-async function getDiscogsData(song: Song): Promise<ProcessedSong> {
-  try {
-    // Add a delay before each Discogs request to respect rate limits
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    const headers = {
-      'User-Agent': 'MusikQuiz/1.0.0',
-      'Authorization': `Discogs token=${config.discogs.apiKey}`
-    };
-
-    // Clean the title and artist for better matching
-    const cleanedTitle = song.title
-      .replace(/\([^)]*\)/g, '')
-      .replace(/\[[^\]]*\]/g, '')
-      .replace(/[^\w\s-]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toLowerCase();
-
-    const cleanedArtist = song.artist
-      .replace(/[^\w\s-]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toLowerCase();
-
-    console.log('\n=== Starting Discogs search ===');
-    console.log('Original song data:', { artist: song.artist, title: song.title });
-    console.log('Cleaned song data:', { artist: cleanedArtist, title: cleanedTitle });
-
-    // Start with a simple search combining artist and title
-    let searchQuery = `${cleanedArtist} ${cleanedTitle}`;
-    let searchUrl = `${DISCOGS_API_URL}/database/search?q=${encodeURIComponent(searchQuery)}&type=master&per_page=10&sort=year,asc`;
-    
-    console.log('\nTrying combined search...');
-    console.log('Search URL:', searchUrl);
-    let searchResponse = await fetch(searchUrl, { headers });
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
-
-    if (!searchResponse.ok) {
-      throw new Error('Failed to search Discogs');
-    }
-
-    let searchData = await searchResponse.json();
-    console.log('Combined search results count:', searchData.results?.length || 0);
-
-    // If no results, try with just the artist name
-    if (!searchData.results?.length) {
-      console.log('\nNo results found, trying artist-only search...');
-      searchQuery = `artist:"${cleanedArtist}"`;
-      searchUrl = `${DISCOGS_API_URL}/database/search?q=${encodeURIComponent(searchQuery)}&type=master&per_page=20&sort=year,asc`;
-      console.log('Search URL:', searchUrl);
-      
-      searchResponse = await fetch(searchUrl, { headers });
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
-
-      if (!searchResponse.ok) {
-        throw new Error('Failed to search Discogs');
-      }
-
-      searchData = await searchResponse.json();
-      console.log('Artist-only search results count:', searchData.results?.length || 0);
-    }
-
-    if (!searchData.results?.length) {
-      console.log('No Discogs results found, using Spotify data');
-      return fallbackToSpotify(song);
-    }
-
-    console.log('\nTop 3 search results:');
-    searchData.results.slice(0, 3).forEach((result: any, index: number) => {
-      console.log(`\nResult ${index + 1}:`);
-      console.log('Title:', result.title);
-      console.log('Year:', result.year);
-      console.log('Format:', result.format?.join(', '));
-      console.log('Type:', result.type);
-      console.log('ID:', result.id);
-      const score = calculateMatchScore(result, cleanedArtist, cleanedTitle);
-      console.log('Match score:', score);
-    });
-
-    // Find the best matching release
-    let bestMatch = null;
-    let bestMatchScore = -1;
-
-    for (const result of searchData.results) {
-      const score = calculateMatchScore(result, cleanedArtist, cleanedTitle);
-      
-      // Only consider results with a minimum match quality
-      if (score > bestMatchScore) {
-        bestMatchScore = score;
-        bestMatch = result;
-      }
-    }
-
-    if (!bestMatch || bestMatchScore < 80) {  // Require a high confidence match
-      console.log('\nNo good match found, score too low:', bestMatchScore);
-      return fallbackToSpotify(song);
-    }
-
-    console.log('\nBest match found:', {
-      title: bestMatch.title,
-      year: bestMatch.year,
-      score: bestMatchScore,
-      id: bestMatch.id
-    });
-
-    // Get details for the best matching master release
-    const masterUrl = `${DISCOGS_API_URL}/masters/${bestMatch.id}`;
-    console.log('\nFetching master details from:', masterUrl);
-    const masterResponse = await fetch(masterUrl, { headers });
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
-
-    if (!masterResponse.ok) {
-      throw new Error('Failed to fetch master details');
-    }
-
-    const masterData = await masterResponse.json();
-    console.log('Master release data:', {
-      id: masterData.id,
-      title: masterData.title,
-      year: masterData.year,
-      mainRelease: masterData.main_release,
-      styles: masterData.styles,
-      genres: masterData.genres
-    });
-
-    // Get the main release details for more accurate date
-    const releaseUrl = `${DISCOGS_API_URL}/releases/${masterData.main_release}`;
-    console.log('\nFetching main release details from:', releaseUrl);
-    const releaseResponse = await fetch(releaseUrl, { headers });
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
-
-    if (!releaseResponse.ok) {
-      throw new Error('Failed to fetch release details');
-    }
-
-    const releaseData = await releaseResponse.json();
-    console.log('Release details:', {
-      id: releaseData.id,
-      title: releaseData.title,
-      released: releaseData.released,
-      formats: releaseData.formats
-    });
-
-    // Skip promos and samplers
-    const format = releaseData.formats?.[0];
-    if (format?.descriptions?.some((desc: string) => 
-      ['promo', 'sampler', 'test pressing', 'advance', 'acetate'].some(keyword => 
-        desc.toLowerCase().includes(keyword)
-      )
-    )) {
-      console.log('Skipping promo/sampler release, using Spotify data');
-      return fallbackToSpotify(song);
-    }
-
-    // Parse release date
-    const releaseDate = {
-      year: masterData.year?.toString() || 'N/A',
-      month: 'N/A',
-      day: 'N/A'
-    };
-
-    if (releaseData.released) {
-      const parts = releaseData.released.split('-');
-      if (parts[0]) releaseDate.year = parts[0];
-      if (parts[1]) {
-        const monthNum = parseInt(parts[1], 10);
-        if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
-          releaseDate.month = getMonthName(parts[1]);
-        }
-      }
-      if (parts[2]) {
-        const dayNum = parseInt(parts[2], 10);
-        if (!isNaN(dayNum)) {
-          releaseDate.day = dayNum.toString();
-        }
-      }
-    }
-
-    // Only validate that the year is within a reasonable range
-    const year = parseInt(releaseDate.year, 10);
-    if (isNaN(year) || year < 1900 || year > new Date().getFullYear()) {
-      console.log('Invalid release year, using Spotify data');
-      return fallbackToSpotify(song);
-    }
-
-    console.log('\nFinal release date:', releaseDate);
-    return {
-      artist: song.artist,
-      title: song.title,
-      currentReleaseDate: song.currentReleaseDate,
-      spotifyUrl: song.spotifyUrl,
-      releaseYear: releaseDate.year,
-      releaseMonth: releaseDate.month,
-      releaseDay: releaseDate.day,
-      source: 'discogs',
-      sourceUrl: `https://www.discogs.com/master/${bestMatch.id}`
-    };
-  } catch (error) {
-    console.error(`Error processing song ${song.title} with Discogs:`, error);
-    return fallbackToSpotify(song);
-  }
-}
-
-// Helper function to calculate match score between a Discogs result and our search terms
-function calculateMatchScore(result: any, cleanedArtist: string, cleanedTitle: string): number {
-  const resultTitle = result.title.toLowerCase();
-  let score = 0;
-
-  // Split the Discogs title which is usually in format "Artist - Title"
-  const parts = resultTitle.split(' - ');
-  if (parts.length !== 2) {
-    return 0; // Invalid format, probably not a match
-  }
-
-  const [artistPart, titlePart] = parts;
-
-  // Artist matching (40 points max)
-  if (artistPart === cleanedArtist) {
-    score += 40; // Exact artist match
-  } else if (artistPart.includes(cleanedArtist)) {
-    score += 20; // Partial artist match
-  }
-
-  // Title matching (40 points max)
-  if (titlePart === cleanedTitle) {
-    score += 40; // Exact title match
-  } else if (titlePart.includes(cleanedTitle)) {
-    score += 20; // Partial title match
-  }
-
-  // Year validation (20 points max)
-  const year = parseInt(result.year, 10);
-  if (!isNaN(year) && year >= 1900 && year <= new Date().getFullYear()) {
-    score += 20; // Valid year
-  }
-
-  console.log('Match score calculation:', {
-    result: result.title,
-    year: result.year,
-    artistScore: score <= 40 ? score : 40,
-    titleScore: score > 40 ? score - 40 : 0,
-    yearScore: score > 80 ? score - 80 : 0,
-    totalScore: score
-  });
-
-  return score;
-}
-
-// Ensure fallbackToSpotify returns the full ProcessedSong structure
-function fallbackToSpotify(song: Song): ProcessedSong {
-  return {
-    artist: song.artist,
-    title: song.title,
-    currentReleaseDate: song.currentReleaseDate,
-    spotifyUrl: song.spotifyUrl,
-    releaseYear: song.currentReleaseDate.split('-')[0] || 'N/A',
-    releaseMonth: getMonthName(song.currentReleaseDate.split('-')[1]),
-    releaseDay: song.currentReleaseDate.split('-')[2] || 'N/A',
-    source: 'spotify',
-    sourceUrl: song.spotifyUrl
-  };
-}
-
-// Simplified getReleaseData function - Discogs first
-async function getReleaseData(song: Song): Promise<ProcessedSong> {
-  console.log('>>> Entering getReleaseData for:', song.title);
-  console.log(`Attempting Discogs lookup for: ${song.title}`);
-  
-  // Directly call getDiscogsData. It already contains the logic to fallback to Spotify if needed.
-  try {
-    const processedSong = await getDiscogsData(song); 
-    
-    // Add a check to ensure we have *some* result, even if it's the fallback
-    if (!processedSong) { 
-       // This case should theoretically not happen if getDiscogsData always returns ProcessedSong
-       console.error(`Catastrophic failure: getDiscogsData returned undefined/null for ${song.title}. Using basic fallback.`);
-       return fallbackToSpotify(song); // Return fallback explicitly just in case
-    }
-    
-    // Ensure releaseYear is valid before returning, otherwise use fallback
-    if (!processedSong.releaseYear || processedSong.releaseYear === 'N/A') {
-       console.warn(`Discogs lookup for ${song.title} resulted in invalid year (${processedSong.releaseYear}). Using Spotify fallback.`);
-       return fallbackToSpotify(song);
-    }
-
-    return processedSong;
-
-  } catch (error) {
-      console.error(`Error during getDiscogsData call for ${song.title}:`, error);
-      console.log(`Falling back to Spotify due to error for: ${song.title}`);
-      return fallbackToSpotify(song); // Fallback if getDiscogsData throws an unhandled error
-  }
-}
-
-// Define the background function
-async function processSongsInBackground(jobId: string, songsToProcess: Song[]) {
-  console.log(`[Job ${jobId}] Entering processSongsInBackground for ${songsToProcess.length} songs.`);
-  const statusKey = `job:${jobId}:status`;
-  const resultsKey = `job:${jobId}:results`;
-  const totalSongs = songsToProcess.length;
-
-  try {
-    console.log(`[Job ${jobId}] Attempting to set status to 'processing'.`);
-    await redisClient.set(statusKey, 'processing', { ex: JOB_EXPIRATION });
-    console.log(`[Job ${jobId}] Successfully set status to 'processing'.`);
-
-    for (let i = 0; i < songsToProcess.length; i++) {
-      const song = songsToProcess[i];
-      console.log(`[Job ${jobId}] Processing song ${i + 1}/${totalSongs}: "${song.title}"`);
-      try {
-        const processedSong = await getReleaseData(song); // Process the song
-        // Store the result in Redis list
-        await redisClient.rpush(resultsKey, JSON.stringify(processedSong)); 
-        console.log(`[Job ${jobId}] Stored result for "${song.title}"`);
-        // Optional: Add a small delay to prevent rate limiting issues if getReleaseData calls external APIs frequently
-        await new Promise(resolve => setTimeout(resolve, 1000)); 
-      } catch (songError) {
-        console.error(`[Job ${jobId}] Error processing song "${song.title}":`, songError);
-        // Optionally store an error marker for this song, or just skip
-        const errorMessage = songError instanceof Error ? songError.message : 'Unknown error';
-        const errorResult = { ...fallbackToSpotify(song), error: `Failed to process: ${errorMessage}` };
-        await redisClient.rpush(resultsKey, JSON.stringify(errorResult));
-      }
-    }
-
-    console.log(`[Job ${jobId}] Finished processing loop.`);
-
-    console.log(`[Job ${jobId}] Attempting to set status to 'complete'.`);
-    await redisClient.set(statusKey, 'complete', { ex: JOB_EXPIRATION });
-    console.log(`[Job ${jobId}] Background processing complete. Status set to 'complete'.`);
-
-  } catch (error) {
-    console.error(`[Job ${jobId}] Error during background processing:`, error);
-    try {
-      console.log(`[Job ${jobId}] Attempting to set status to 'failed' due to error.`);
-      await redisClient.set(statusKey, 'failed', { ex: JOB_EXPIRATION });
-      console.log(`[Job ${jobId}] Successfully set status to 'failed'.`);
-    } catch (redisError) {
-      console.error(`[Job ${jobId}] Failed to set status to 'failed' in Redis:`, redisError);
-    }
-  }
-}
-
 // --- API Endpoint --- 
 export async function POST(request: NextRequest) {
   try {
-    // Expect payload: { firstSong: Song, remainingSongs: Song[] }
     const payload = await request.json();
     const { firstSong, remainingSongs }: { firstSong: Song, remainingSongs: Song[] } = payload;
 
     if (!firstSong || !Array.isArray(remainingSongs)) {
-      return NextResponse.json({ error: 'Invalid payload structure. Expecting { firstSong, remainingSongs }.' }, { status: 400 });
+      return NextResponse.json({ error: 'Invalid payload structure.' }, { status: 400 });
     }
 
     console.log(`Received request: Process 1 song now, ${remainingSongs.length} in background.`);
 
-    // --- Process First Song --- 
+    // --- Process First Song --- (Keep this logic as before)
     console.log(`Processing first song synchronously: "${firstSong.title}"`);
     let processedFirstSong: ProcessedSong;
     try {
         processedFirstSong = await getReleaseData(firstSong);
     } catch (error) {
         console.error(`Critical error processing first song ${firstSong.title}:`, error);
-        // If first song fails, fallback to Spotify data for it and continue background for others
         processedFirstSong = fallbackToSpotify(firstSong);
-        // Optionally, could decide to fail the whole request here if first song is critical
-        // return NextResponse.json({ error: 'Failed to process initial song' }, { status: 500 });
     }
-    
     if (!processedFirstSong.releaseYear || processedFirstSong.releaseYear === 'N/A') {
         console.warn(`First song "${firstSong.title}" could not be processed with a valid year. Using fallback data.`);
-        // Ensure it has some year, even if 'N/A' or from Spotify fallback
     }
 
-    // --- Start Background Processing --- 
-    const jobId = uuidv4(); // Generate unique job ID
-    const initialReleaseYear = processedFirstSong.releaseYear; // Get year from the processed first song
+    // --- Enqueue Background Job via QStash --- (NEW LOGIC)
+    const jobId = uuidv4();
+    const statusKey = `job:${jobId}:status`;
 
-    // Trigger background task - DO NOT AWAIT
-    processSongsInBackground(jobId, remainingSongs).catch((error) => {
-      console.error(`[Job ${jobId}] Unhandled error in background task initiation:`, error);
-      // Attempt to mark the job as failed if the background task fails immediately
-      redisClient.set(`job:${jobId}:status`, 'init_failed', { ex: JOB_EXPIRATION })
-        .catch(redisError => console.error(`[Job ${jobId}] Failed to set init_failed status:`, redisError));
-    });
-    console.log(`[Job ${jobId}] Initiated background task for ${remainingSongs.length} songs.`);
+    // 1. Set initial status in Redis
+    try {
+      await redisClient.set(statusKey, 'queued', { ex: JOB_EXPIRATION });
+      console.log(`[Job ${jobId}] Initial status set to 'queued' in Redis.`);
+    } catch (redisError) {
+      console.error(`[Job ${jobId}] Failed to set initial 'queued' status:`, redisError);
+      // Consider returning error
+    }
 
-    // --- Return Initial Response --- 
+    // 2. Publish job to QStash worker
+    if (remainingSongs.length > 0) {
+      try {
+        const qstashClient = new Client({ token: process.env.QSTASH_TOKEN! });
+        const baseUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000';
+        const workerUrl = `${baseUrl}/api/process-job-worker`;
+        console.log(`[Job ${jobId}] Publishing job to QStash worker: ${workerUrl}`);
+        await qstashClient.publishJSON({
+          url: workerUrl,
+          body: {
+            jobId: jobId,
+            songsToProcess: remainingSongs
+          },
+        });
+        console.log(`[Job ${jobId}] Successfully published job for ${remainingSongs.length} songs to QStash.`);
+      } catch (qstashError) {
+        console.error(`[Job ${jobId}] Failed to publish job to QStash:`, qstashError);
+        await redisClient.set(statusKey, 'publish_failed', { ex: JOB_EXPIRATION });
+        // Consider returning error
+      }
+    } else {
+        console.log(`[Job ${jobId}] No remaining songs, setting status directly to 'complete'.`);
+        await redisClient.set(statusKey, 'complete', { ex: JOB_EXPIRATION });
+    }
+
+    // --- Return Initial Response --- (Keep as before)
     return NextResponse.json({
-        processedSong: processedFirstSong, // Send the first song processed
-        jobId: jobId                     // Send the ID for the background job
+        processedSong: processedFirstSong,
+        jobId: jobId
     });
 
   } catch (error) {

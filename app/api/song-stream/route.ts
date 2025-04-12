@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 // import { kv } from "@vercel/kv";
 import { Redis } from "@upstash/redis"; // Import Upstash Redis client
-import { ProcessedSong } from '../process-songs/route'; // Import the type
+import { ProcessedSong } from '@/app/utils/processing'; // Update import path for ProcessedSong type
 
 // Initialize Redis client using environment variables
 const redis = new Redis({
