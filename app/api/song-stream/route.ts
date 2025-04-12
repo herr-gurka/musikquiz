@@ -52,31 +52,28 @@ export async function GET(request: NextRequest) {
         let currentResultsLength = 0;
         let status: string | null = null;
         try {
-          // 1. Fetch results and let Upstash client attempt parsing
-          const results = await redis.lrange<ProcessedSong>(resultsKey, 0, -1); // Specify expected type
-          currentResultsLength = results.length; 
-          
-          // Filter out any items that failed client-side parsing (might be null or invalid)
-          // And reverse to get oldest-to-newest
+          // 1. Fetch results
+          const results = await redis.lrange<ProcessedSong>(resultsKey, 0, -1); 
           const currentResults: ProcessedSong[] = results
               .filter((song): song is ProcessedSong => song !== null && typeof song === 'object' && song.title !== undefined)
               .reverse(); 
+          currentResultsLength = currentResults.length; // Use length of *parsed* results
               
-          console.log(`[SSE ${jobId}] Fetched ${currentResultsLength} potential items from Redis, successfully parsed ${currentResults.length}.`);
+          console.log(`[SSE ${jobId}] Parsed ${currentResultsLength} results from Redis.`);
 
           // 2. Send any new results
-          if (currentResults.length > lastSentIndex) {
-            console.log(`[SSE ${jobId}] Parsed results length ${currentResults.length} > lastSentIndex ${lastSentIndex}. Sending new ones.`);
+          let resultsSentNow = 0;
+          if (currentResultsLength > lastSentIndex) {
+            console.log(`[SSE ${jobId}] Parsed results length ${currentResultsLength} > lastSentIndex ${lastSentIndex}. Sending new ones.`);
             const newResults = currentResults.slice(lastSentIndex);
+            resultsSentNow = newResults.length;
             newResults.forEach(song => {
-              // Need to stringify again for the SSE data field
               sendEvent('song', JSON.stringify(song)); 
               console.log(`[SSE ${jobId}] Sent song: ${song.title}`);
             });
-            lastSentIndex = currentResults.length;
-            resultsSentInThisCheck = true;
+            lastSentIndex = currentResultsLength;
           } else {
-              console.log(`[SSE ${jobId}] No new valid results found. Parsed count=${currentResults.length}, lastSentIndex=${lastSentIndex}`);
+              console.log(`[SSE ${jobId}] No new valid results found. Parsed count=${currentResultsLength}, lastSentIndex=${lastSentIndex}`);
           }
 
           // 3. Fetch the status
@@ -84,22 +81,22 @@ export async function GET(request: NextRequest) {
           status = typeof statusResult === 'string' ? statusResult : null;
           console.log(`[SSE ${jobId}] Fetched status: ${status}`);
 
-          // 4. Check if job is finished (using the correctly typed status variable)
+          // 4. Check if job is finished
           const isJobFinished = (status === 'complete' || status === 'failed' || status === 'init_failed' || status === null);
-          console.log(`[SSE ${jobId}] isJobFinished=${isJobFinished}, status=${status}, resultsSentInThisCheck=${resultsSentInThisCheck}`);
+          console.log(`[SSE ${jobId}] isJobFinished=${isJobFinished}, status=${status}, resultsSentNow=${resultsSentNow}, lastSentIndex=${lastSentIndex}, currentResultsLength=${currentResultsLength}`);
 
-          // 5. Close ONLY if job is finished AND we didn't just send results
-          if (isJobFinished && !resultsSentInThisCheck) {
+          // 5. Close ONLY if job is finished AND all results stored have been sent
+          if (isJobFinished && lastSentIndex === currentResultsLength) {
              const finalStatus = status || 'unknown';
-             console.log(`[SSE ${jobId}] Condition met: Job finished (${finalStatus}) and no new results sent this check. Closing connection.`);
+             console.log(`[SSE ${jobId}] Condition met: Job finished (${finalStatus}) and all ${currentResultsLength} results sent. Closing connection.`);
              sendEvent('done', finalStatus);
              if (intervalId) clearInterval(intervalId);
              try { controller.close(); } catch (e) { /* Ignore */ }
              return; // Stop the interval checks
-          } else if (isJobFinished && resultsSentInThisCheck) {
-              console.log(`[SSE ${jobId}] Condition NOT met: Job finished (${status}) BUT new results were sent this check. Will close on next check.`);
+          } else if (isJobFinished && lastSentIndex < currentResultsLength) {
+              console.log(`[SSE ${jobId}] Condition NOT met: Job finished (${status}) BUT more results to send (${lastSentIndex}/${currentResultsLength}). Continuing poll.`);
           } else {
-              console.log(`[SSE ${jobId}] Condition NOT met: Job not finished or other condition. Continuing poll.`);
+              console.log(`[SSE ${jobId}] Condition NOT met: Job not finished. Continuing poll.`);
           }
 
         } catch (error) {
