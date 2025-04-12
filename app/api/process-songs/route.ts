@@ -76,6 +76,9 @@ export async function POST(request: NextRequest) {
             jobId: jobId,
             songsToProcess: remainingSongs
           },
+          headers: {
+            'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET!
+          }
         });
         console.log(`[Job ${jobId}] Successfully published job for ${remainingSongs.length} songs to QStash.`);
       } catch (qstashError) {
