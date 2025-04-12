@@ -12,6 +12,9 @@ import {
   getReleaseData 
 } from '@/app/utils/processing'; 
 
+// Increase max duration for this serverless function (requires Node.js runtime)
+export const maxDuration = 60; 
+
 const JOB_EXPIRATION = 3600; // 1 hour
 
 // Restore Redis client initialization
